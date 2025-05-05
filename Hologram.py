@@ -33,11 +33,17 @@ class Hologram:
         self.rho, self.phi = cart2pol(self.x, self.y)
         self.rho = self.rho*pixelLengthMM
         self.holoBase = np.zeros((self.height,self.width))
+        self.holo = self.holoBase
         self.phaseCalibration = np.zeros((self.height,self.width))
         self.voltageCalibration = DEFAULT_VOLTAGE_CALIBRATION
+        self.zernikeHolo = np.zeros((self.height,self.width))
         self.boundaries:np.ndarray = None
         self.OAMs:np.ndarray = None
         self.frequencyRadiusMap = None
+        self.omega_max = 840e-9
+        self.omega_min = 774.405e-9
+        self.rMin = 5.63 
+        self.rMax = 6.05
         return
     
     def _updateModes(self, boundaries, OAMs):
@@ -56,10 +62,22 @@ class Hologram:
         """
         self.holo = np.polyval(self.voltageCalibration,self.holo%(2*np.pi))/(255/(2*np.pi))
 
+    def _applyZernikeCorrection(self):
+        self.holo = (self.holo+self.zernikeHolo)%(2*np.pi)
+
     def _finalizeHologram(self):
         self._applyPhaseCalibration()
+        self._applyZernikeCorrection()
         self._applyVoltageCalibration()
     
+    def _linearInterpolRadius(self, n:int, OAM_start:int, deltaL = 1):
+        omegas = np.linspace(self.omega_min,self.omega_max,n+1)
+        radia = np.interp(omegas,
+                          [self.omega_min, self.omega_max],
+                          [self.rMin, self.rMax])
+        OAM = np.flip(np.linspace(OAM_start,OAM_start+(n-1)*deltaL,n))
+        return radia, OAM
+
     ## Hologram functions
     def vortex(self,OAM:int, rMin = None, rMax = None):
         if rMin is None: rMin = 0
@@ -102,7 +120,7 @@ class Hologram:
         self._finalizeHologram()
         return self.holo
     
-    def customFunction(self, boundaries, OAMs):
+    def customFunction(self, boundaries, OAMs)->np.ndarray:
         """
         Creates a hologram with custom shaped OAM distribution
 
@@ -123,6 +141,60 @@ class Hologram:
         self._finalizeHologram()
         return self.holo
     
+    def parabolaOAM(self, n:int, OAM_start:int, OAM_max:int):
+        """
+        Makes parabolic profile of the OAM with the vertex at middle radius.
+
+        Parameters
+            :param n: Number of modes. Must be odd integer!
+            :type n: int       
+            :param OAM_start: Minimum OAM of the parabola.
+            :type OAM_start: int       
+            :param OAM_max: Maximum OAM of the parabola.
+            :type OAM_max: int
+        
+        """
+
+        if n%2 == 0:
+            raise ValueError("Parameter 'n' must be an odd integer number!")
+
+        def parabola(x):
+            h = np.ceil(n/2)
+            return ((OAM_max-OAM_start)/(n-h)**2)*(x-h)**2+OAM_start
+        
+        omegas = np.linspace(self.omega_min,self.omega_max,n+1)
+        boundaries = np.interp(omegas,[self.omega_min,self.omega_max],[self.rMin, self.rMax])
+        OAMs = np.ceil(parabola(np.linspace(1,n,n)))
+        return self.customFunction(boundaries, OAMs)
+
+    def stepFunctionOAM(self, n:int, step_pos:int,
+                        OAM_start:int, OAM_gap:int,
+                        delta_l1:int = -1, delta_l2:int = 1):
+        """
+        Makes a stepfunction profile for the OAM.
+        
+        Parameters
+            :param n: Number of OAM modes.
+            :type n: uint
+            :param step_pos: Position of the mode containing the step.
+            :type step_pos: uint  
+            :param OAM_start: OAM the first part of step function begins with.
+            :type OAM_start: int    
+            :param OAM_gap: Size of the OAM gap.
+            :type OAM_gap: int
+            :param delta_l1: Difference between the OAM modes of the first part of the step function.
+            :type delta_l1: int default = -1            
+            :param delta_l2: Difference between the OAM modes of the second part of the step function.
+            :type delta_l2: int default = 1
+        """
+
+        boundaries, OAM1 = self._linearInterpolRadius(n, OAM_start+OAM_gap, delta_l1)
+        OAM2 = self._linearInterpolRadius(step_pos, OAM_start, delta_l2)[1]
+        OAM1[step_pos:] = OAM2
+        OAM = OAM1
+        return self.customFunction(boundaries, OAM)
+
+
     def setHoloBase(self, mode = 0):
         def makeCheck(size):
             #implement
@@ -217,31 +289,30 @@ class Hologram:
                 print(f"Voltage calibration parameters loaded successfuly!\n{self.voltageCalibration}")
                 break
 
-    def zernikeCorrection(self):
+    def setZernikeCorrection(self, pist:float = 0,
+                          xTilt:float = 0, yTilt:float = 0,
+                          defocus:float = 0, 
+                          verAstic:float = 0, horAstic:float = 0,
+                          verComa:float = 0, horComa:float = 0,
+                          verTref:float = 0, horTref:float = 0,
+                          spherical:float = 0):
         """
-        from current setup:
+        from current setup (may 2025):
         pist = 0.; x_tilt = -0.; y_tilt = -0.; dfoc = 0; ver_ast=0.03; ob_ast = 0.00; h_coma = 0.00; v_coma = 0.0; v_tref = 0.; ob_tref = 0.; spher = 0.00;
-
-%zernike corrections
-function  Holo_correc  = zernike( pist, x_tilt , y_tilt , dfoc ,ver_ast, ob_ast, h_coma , v_coma ,v_tref,ob_tref, spher, H,V, RHO,PHI)
-
-    Holo_0 = (zeros(V,H)+1)*pist;
-    Holo_1 = x_tilt * (RHO.*cos(mod(PHI,2*pi))) ;
-    Holo_2 = y_tilt* (RHO.*sin(mod(PHI,2*pi)) );
-    Holo_3 = dfoc * ((2* ( RHO.* RHO) -1)) ;
-    Holo_4 = ver_ast * (RHO.* RHO.*cos(2 * mod(PHI,2*pi)));
-    Holo_5 = ob_ast * (( RHO.* RHO).*sin(2 * mod(PHI,2*pi)));
-    Holo_6 = h_coma * ((3*( RHO.* RHO)-2) .* RHO .* cos(mod(PHI,2*pi)));
-    Holo_7 = v_coma * ((3*( RHO.* RHO)-2) .* RHO .* sin(mod(PHI,2*pi)));
-    Holo_8 = v_tref * (( RHO.* RHO.* RHO) .* sin(3*mod(PHI,2*pi)));
-    Holo_9 = ob_tref * (( RHO.* RHO.* RHO) .* cos(3*mod(PHI,2*pi)));
-    Holo_10 = spher * (6*(RHO.*RHO.*RHO.*RHO) - 6*(RHO.*RHO) + 1);
-    
-    
-    Holo_correc =  Holo_0 + Holo_1 + Holo_2+ Holo_3+ Holo_4+ Holo_5+ Holo_6+ Holo_7+ Holo_8 + Holo_9 + Holo_10 ;   
-end
         """
-        return
+        holo = np.ones((self.height,self.width))*pist
+        holo = holo + xTilt * (self.rho*np.cos(self.phi)) 
+        holo = holo + yTilt * (self.rho*np.sin(self.phi))
+        holo = holo + defocus * (2*np.power(self.rho,2)-1)
+        holo = holo + verAstic * (np.power(self.rho,2)*np.cos(2*(self.phi)))
+        holo = holo + horAstic * (np.power(self.rho,2)*np.sin(2*(self.phi)))
+        holo = holo + horComa * ((3*np.power(self.rho,2)-2)*self.rho*np.cos(self.phi))
+        holo = holo + verComa * ((3*np.power(self.rho,2)-2)*self.rho*np.sin(self.phi))
+        holo = holo + verTref * (np.power(self.rho,3)*np.sin(3*(self.phi)))
+        holo = holo + horTref * (np.power(self.rho,3)*np.cos(3*(self.phi)))
+        holo = holo + spherical * (6*np.power(self.rho,4) - 6*np.power(self.rho,2) + 1)
+        self.zernikeHolo = holo
+        return holo
 
 
 
@@ -264,59 +335,6 @@ if __name__ == '__main__':
 """
 Further Hologram Functions to implement
 
-function [radia, OAM] = linearInterpolRadius(n, OAM_start, deltaL)
-arguments
-    n (1,1) 
-    OAM_start (1,1) 
-    deltaL (1,1) = 1
-end
-    omega_max = 840e-9;
-    omega_min = 774.405e-9;
-    rMin = 5.63;
-    rMax = 6.05;
-    omegas = linspace(omega_min,omega_max,n+1);
-    radia = interp1([omega_min,omega_max],[rMin, rMax],omegas);
-    OAM = flip(OAM_start:deltaL:OAM_start+(n-1)*deltaL);
-end
-
-function [radia, OAM] = parabolaOAM(n, OAM_start, OAM_max)
-%Makes parabolic profile of the OAM with the vertex at middle radius
-arguments
-    n (1,1) 
-    OAM_start (1,1) 
-    OAM_max (1,1)
-end
-    if mod(n,2) == 0
-        ME = MException('parabolaOAM:ValueError',"n must be an odd integer number");
-        throw(ME)
-    end
-    omega_max = 840e-9;
-    omega_min = 774.405e-9;
-    rMin = 5.63;
-    rMax = 6.05;
-    function p = parabola(x)
-        h = ceil(max(n)/2);
-        p = ((OAM_max-OAM_start)./(n-h).^2).*(x-h).^2+OAM_start;
-    end
-    omegas = linspace(omega_min,omega_max,n+1);
-    radia = interp1([omega_min,omega_max],[rMin, rMax],omegas);
-    OAM = ceil(parabola(linspace(1,n,n)));
-end
-
-function [radia, OAM] = stepfunctionOAM(n, step_pos,OAM_start, OAM_gap, delta_l1, delta_l2)
-arguments
-    n (1,1)
-    step_pos (1,1) 
-    OAM_start (1,1)
-    OAM_gap (1,1)
-    delta_l1 (1,1) = -1
-    delta_l2 (1,1) = 1
-end
-    [radia, OAM1] = linearInterpolRadius(n, OAM_start+OAM_gap, delta_l1);
-    [~, OAM2] = linearInterpolRadius(step_pos, OAM_start, delta_l2);
-    OAM1(step_pos:end) = OAM2;
-    OAM = OAM1;
-end
 
 function [holoOut, dphi] = applyGratingToSections(boundaries,holoIn,g, opts)
 arguments
