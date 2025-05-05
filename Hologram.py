@@ -38,6 +38,10 @@ class Hologram:
         self.boundaries:np.ndarray = None
         self.OAMs:np.ndarray = None
         self.frequencyRadiusMap = None
+        self.omega_max = 840e-9
+        self.omega_min = 774.405e-9
+        self.rMin = 5.63 
+        self.rMax = 6.05
         return
     
     def _updateModes(self, boundaries, OAMs):
@@ -60,6 +64,14 @@ class Hologram:
         self._applyPhaseCalibration()
         self._applyVoltageCalibration()
     
+    def _linearInterpolRadius(self, n, OAM_start, deltaL = 1):
+        omegas = np.linspace(self.omega_min,self.omega_max,n+1)
+        radia = np.interp([self.omega_min, self.omega_max],
+                          omegas,
+                          [self.rMin, self.rMax])
+        OAM = np.flip(np.linspace(OAM_start,OAM_start+(n-1)*deltaL))
+        return radia, OAM
+
     ## Hologram functions
     def vortex(self,OAM:int, rMin = None, rMax = None):
         if rMin is None: rMin = 0
