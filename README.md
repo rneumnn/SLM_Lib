@@ -1,0 +1,3 @@
+The purpose of this library is to provide a simple way of controlling a phase only SLM device as a secondary screen. The SLMDisplay module enables the user to realtime update the secondary screen while not blocking the main loop of the code. This enables SLM automatization with python.
+Note that the SLM-window can only be closed by its close() method. Else the python instance might crash...
+Furthermore the Hologram module provides a variety of hologramtypes to manipulate optical angular momentum (OAM) of a concentric Besselbeam.
