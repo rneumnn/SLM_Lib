@@ -27,4 +27,7 @@ def testDiffractionGratings():
     h.lightspring(50,1,5,3,6)
     h.applyGratingToSections(h.boundaries,h.holo,1,plot = True)
     h.plotHolo()
-    return
+    
+def testCalibrationHolo():
+    h.calibrationHolo(4, 6)
+    h.plotHolo()

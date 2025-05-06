@@ -2,4 +2,5 @@ import tests.test as t
 
 # t.testHolo()
 # t.testHoloLS()
-t.testDiffractionGratings()
+# t.testDiffractionGratings()
+t.testCalibrationHolo()

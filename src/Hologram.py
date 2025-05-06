@@ -193,7 +193,7 @@ class Hologram:
         OAM = OAM1
         return self.customOAMFunction(boundaries, OAM)
 
-    def applyGratingToSections(self, boundaries:np.ndarray = None, holoIn:np.ndarray = None, g:float = 1, dphi:np.ndarray=-1, plot=False):
+    def applyGratingToSections(self, boundaries:np.ndarray = None, holoIn:np.ndarray = None, g:float = 1, dphi:np.ndarray=None, plot=False):
         holoOut = np.copy(holoIn)
         if boundaries is None:
             boundaries = self.boundaries
@@ -201,7 +201,7 @@ class Hologram:
             holoIn = self.holo
 
         n = boundaries.shape[0]-1
-        if dphi == -1:
+        if dphi is None:
             dphi = 2*np.pi/n
             dphi = dphi*np.linspace(0,n-1,n)
         elif not (dphi.shape[0] == n):
@@ -220,7 +220,7 @@ class Hologram:
         self.holo = holoOut
         return self.holo, dphi
     
-    def calibrationHolo(self, rMin, rMax, thickness_mm:float = 0.4, nSample:int = 5, OAM:int = 60, deltaOAM:int = -1, g = 30):
+    def calibrationHolo(self, rMin:float, rMax:float, thickness_mm:float = 0.4, nSample:int = 5, OAM:int = 60, deltaOAM:int = -1, g = 30):
         if deltaOAM == -1:
             deltaOAM = round(OAM/4,0)
         outerBoundaries = np.linspace(rMax,rMax+thickness_mm,nSample+1)
@@ -234,7 +234,7 @@ class Hologram:
         holo[iMask] = innerHolo[iMask]
         outHolo, dphi = self.applyGratingToSections(outerBoundaries,holo,g)
         outHolo = self.applyGratingToSections(innerBoundaries,outHolo,g, dphi = np.flip(dphi))[0]
-        print("Calibration: each sample of the radius has thickness %.2f mm;\ninner radius maximum: %.2f;\nouter radius minimum: %.2f",[thickness_mm/nSample,rMin,rMax])
+        print("Calibration: each sample of the radius has thickness {:.2f} mm;\ninner radius maximum: {:.2f};\nouter radius minimum: {:.2f}".format(thickness_mm/nSample,rMin,rMax))
 
 
 
