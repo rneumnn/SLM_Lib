@@ -119,9 +119,9 @@ class Hologram:
         self._finalizeHologram()
         return self.holo
     
-    def customFunction(self, boundaries, OAMs)->np.ndarray:
+    def customOAMFunction(self, boundaries, OAMs)->np.ndarray:
         """
-        Creates a hologram with custom shaped OAM distribution
+        Creates a hologram with custom shaped OAM distribution. Maps the OAM(i) to the space between boundaries(i:i+1).
 
         Parameters
             :param boundaries: boundaries in units of rho for the given OAM_i
@@ -164,7 +164,7 @@ class Hologram:
         omegas = np.linspace(self.omega_min,self.omega_max,n+1)
         boundaries = np.interp(omegas,[self.omega_min,self.omega_max],[self.rMin, self.rMax])
         OAMs = np.ceil(parabola(np.linspace(1,n,n)))
-        return self.customFunction(boundaries, OAMs)
+        return self.customOAMFunction(boundaries, OAMs)
 
     def stepFunctionOAM(self, n:int, step_pos:int,
                         OAM_start:int, OAM_gap:int,
@@ -191,7 +191,7 @@ class Hologram:
         OAM2 = self._linearInterpolRadius(step_pos, OAM_start, delta_l2)[1]
         OAM1[step_pos:] = OAM2
         OAM = OAM1
-        return self.customFunction(boundaries, OAM)
+        return self.customOAMFunction(boundaries, OAM)
 
     def applyGratingToSections(self, boundaries:np.ndarray = None, holoIn:np.ndarray = None, g:float = 1, dphi:np.ndarray=-1, plot=False):
         holoOut = np.copy(holoIn)
@@ -218,8 +218,24 @@ class Hologram:
             holoOut[(self.rho>boundaries[i])&(self.rho<boundaries[i+1])] = new
         holoOut = holoOut%(2*np.pi)
         self.holo = holoOut
-        return self.holo
+        return self.holo, dphi
     
+    def calibrationHolo(self, rMin, rMax, thickness_mm:float = 0.4, nSample:int = 5, OAM:int = 60, deltaOAM:int = -1, g = 30):
+        if deltaOAM == -1:
+            deltaOAM = round(OAM/4,0)
+        outerBoundaries = np.linspace(rMax,rMax+thickness_mm,nSample+1)
+        innerBoundaries = np.linspace(rMin-thickness_mm,rMin,nSample+1)
+        oMask = (self.rho>outerBoundaries[0])&(self.rho<outerBoundaries[-1])
+        iMask = (self.rho>innerBoundaries[0])&(self.rho<innerBoundaries[-1])
+        holo = self.holoBase
+        innerHolo = ((OAM-deltaOAM)*self.phi)%(2*np.pi)
+        outerHolo = (OAM*self.phi)%(2*np.pi)
+        holo[oMask] = outerHolo[oMask]
+        holo[iMask] = innerHolo[iMask]
+        outHolo, dphi = self.applyGratingToSections(outerBoundaries,holo,g)
+        outHolo = self.applyGratingToSections(innerBoundaries,outHolo,g, dphi = np.flip(dphi))[0]
+        print("Calibration: each sample of the radius has thickness %.2f mm;\ninner radius maximum: %.2f;\nouter radius minimum: %.2f",[thickness_mm/nSample,rMin,rMax])
+
 
 
     def setHoloBase(self, mode = 0):
@@ -362,49 +378,5 @@ if __name__ == '__main__':
 """
 Further Hologram Functions to implement
 
-
-
-function outHolo = calibrationHolo(rMin, rMax, opts)
-arguments
-    rMin 
-    rMax 
-    opts.thickness = 0.4 %mm
-    opts.nSample = 5
-    opts.OAM = 60
-    opts.deltaOAM = -1
-    opts.g = 30
-end
-    %slm constants
-    H=1280; V=1024; %%Number of Horizontal and Vertical pixels
-    PixelSize = 12.5e-3; % [mm] pixel
-    x = PixelSize.*(-H/2:(H/2-1)); %[mm] x width of window
-    y = PixelSize.*(-V/2:(V/2-1)); %[mm] y width of window
-    [X,Y] = meshgrid(x,y);
-    [PHI,RHO] = cart2pol(X,Y);
-    thickness = opts.thickness;
-    nSample = opts.nSample;
-    OAM = opts.OAM;
-    if opts.deltaOAM == -1
-        deltaOAM = round(OAM/4,0);
-    else
-        deltaOAM = opts.deltaOAM;
-    end
-    g = opts.g;
-    %
-    omega_max = 840e-9;
-    omega_min = 774.405e-9;
-    outerBoundaries = linspace(rMax,rMax+thickness,nSample+1);
-    innerBoundaries = linspace(rMin-thickness,rMin,nSample+1);
-    oMask = (RHO>outerBoundaries(1))&(RHO<outerBoundaries(end));
-    iMask = (RHO>innerBoundaries(1))&(RHO<innerBoundaries(end));
-    holo = zeros(V,H);
-    innerHolo = mod((OAM-deltaOAM)*PHI ,2*pi);
-    outerHolo = mod(OAM*PHI ,2*pi);
-    holo(oMask) = outerHolo(oMask);
-    holo(iMask) = innerHolo(iMask);
-    [outHolo, dphi] = applyGratingToSections(outerBoundaries,holo,g);
-    outHolo = applyGratingToSections(innerBoundaries,outHolo,g, dphi = flip(dphi));
-    fprintf("Calibration: each sample of the radius has thickness %.2f mm;\ninner radius maximum: %.2f;\nouter radius minimum: %.2f",[thickness/nSample,rMin,rMax]);
-end
-
+Lightspring with centered OAM
 """
