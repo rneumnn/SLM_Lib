@@ -26,6 +26,7 @@ class Hologram:
                  pixelLengthMM = SLM_PIXEL_LENGTH):
         self.width = widthPx
         self.height = heightPx
+        self.pixelSize = pixelLengthMM
         self.x, self.y = np.meshgrid(np.arange(-np.floor(self.width/2),np.floor(self.width/2)),
             np.arange(-np.floor(self.height/2),np.floor(self.height/2)))
         self.rho, self.phi = cart2pol(self.x, self.y)
@@ -192,6 +193,34 @@ class Hologram:
         OAM = OAM1
         return self.customFunction(boundaries, OAM)
 
+    def applyGratingToSections(self, boundaries:np.ndarray = None, holoIn:np.ndarray = None, g:float = 1, dphi:np.ndarray=-1, plot=False):
+        holoOut = np.copy(holoIn)
+        if boundaries is None:
+            boundaries = self.boundaries
+        if holoIn is None:
+            holoIn = self.holo
+
+        n = boundaries.shape[0]-1
+        if dphi == -1:
+            dphi = 2*np.pi/n
+            dphi = dphi*np.linspace(0,n-1,n)
+        elif not (dphi.shape[0] == n):
+                raise IndexError(f"length of 'dphi' must equal 'n'! shape(lenght) == ({int(n)},) but is {dphi.shape}")
+        for i in range(n):
+            grating = (2*np.pi*(np.cos(dphi[i])*g*self.x/self.width+np.sin(dphi[i])*g*self.y/self.width))%(2*np.pi)
+            if plot:
+                plt.figure()
+                plt.title(f"Grating {i+1}/{n}: phi = {dphi[i]*(180/np.pi)}°")
+                a = plt.imshow(grating)
+                plt.colorbar(a)
+                plt.show()
+            new = holoIn[(self.rho>boundaries[i])&(self.rho<boundaries[i+1])] + grating[(self.rho>boundaries[i])&(self.rho<boundaries[i+1])]
+            holoOut[(self.rho>boundaries[i])&(self.rho<boundaries[i+1])] = new
+        holoOut = holoOut%(2*np.pi)
+        self.holo = holoOut
+        return self.holo
+    
+
 
     def setHoloBase(self, mode = 0):
         def makeCheck(size):
@@ -334,44 +363,6 @@ if __name__ == '__main__':
 Further Hologram Functions to implement
 
 
-function [holoOut, dphi] = applyGratingToSections(boundaries,holoIn,g, opts)
-arguments
-    boundaries (:,1)
-    holoIn (1024,1280)
-    g (1,1)
-    opts.dphi (:,1) = -1
-    opts.plot = false
-end
-    H=1280; V=1024; %%Number of Horizontal and Vertical pixels
-    PixelSize = 12.5e-3; % [mm] pixel
-    x = PixelSize.*(-H/2:(H/2-1)); %[mm] x width of window
-    y = PixelSize.*(-V/2:(V/2-1)); %[mm] y width of window
-    [X,Y] = meshgrid(x,y);
-    [PHI,RHO] = cart2pol(X,Y);
-    holoOut = holoIn;
-    n = length(boundaries)-1;
-    if opts.dphi == -1
-        opts.dphi = 2*pi/n;
-        opts.dphi = opts.dphi*linspace(1,n,n);
-        dphi = opts.dphi;
-    else
-        if length(opts.dphi) ~= n
-            ME = MException('applyGratingToSections:IndexError',"length of ´dphi´ must equal ´n´!");
-            throw(ME) 
-        end
-    end
-    for i = 1:1:n
-        grating = mod(2*pi*(cos(opts.dphi(i))*g*X/H+sin(opts.dphi(i))*g*Y/V)./PixelSize,2*pi);
-        if opts.plot
-            figure()
-            imagesc(grating)
-            colormap("gray")
-        end
-        new = holoIn((RHO>boundaries(i))&(RHO<boundaries(i+1))) + grating((RHO>boundaries(i))&(RHO<boundaries(i+1)));
-        holoOut((RHO>boundaries(i))&(RHO<boundaries(i+1))) = new;
-    end
-    holoOut = mod(holoOut,2*pi);
-end
 
 function outHolo = calibrationHolo(rMin, rMax, opts)
 arguments
