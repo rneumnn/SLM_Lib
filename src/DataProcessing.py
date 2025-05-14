@@ -8,63 +8,62 @@ from pathlib import Path
 import os
 import re
 
-def reconstruct_data( file, cx, cy, rin, rout, crop_pos, plot_all=False, 
-                     plot_reconstruction=False, fft_crop_radius:float = -1, circle_shift:tuple[int,int] = (0,0),
-                     phaseshift_pos:int = None, subtract_ref = None) -> np.ndarray:
+MOTOR_STEP_SIZE = 50e-9 #m
+
+def reconstruct_data(file, 
+                     cx:int, cy:int, A:int, B:int, thickness:int, angle_deg:float = 0,
+                     crop_pos = ((500,500),1000), 
+                     plot_all:bool=False, 
+                     plot_reconstruction:bool=False, 
+                     fft_crop_radius:float = -1, 
+                     crop_shift:tuple[int,int] = (0,0),
+                     subtract_ref = None) -> np.ndarray:
     """
     Reconstructs the full electric field(phase and amplitude) out of the off-axis-holography interference data.
-    First the fft of the data is taken. An ellipse is defined by `cx, cy, rin, rout` to crop out the part of the fft reffering to the interference term MR* or M*R.
+    First the fft of the data is taken. An ellipse is defined by `cx, cy, A, B` to crop out the part of the fft reffering to the interference term MR* or M*R.
     This crop gets centered in frequency space and gets inverse transformed to get the phase and amplitude of the field.
+    The data array is cropped to be a square. This is defined by `crop_pos`.
 
     Parameters
         :param file: Path to the file to reconstruct or the raw data as np.ndarray
-        :type file: str|Path|numpy.ndarray
-    
-        :param cx: 
-        :type cx: _type_
-    
-        :param cy: 
-        :type cy: _type_
-    
-        :param rin: 
-        :type rin: _type_
-    
-        :param rout: 
-        :type rout: _type_
-    
-        :param crop_pos: 
-        :type crop_pos: _type_
-    
-        :param plot_all: False
-        :type plot_all: 
-        
-        :param plot_reconstruction: False
-        :type plot_reconstruction: 
-        
-        :param fft_crop_radius: -1
-        :type fft_crop_radius: 
-        
-        :param circle_shift: (0,0)
-        :type circle_shift: 
-        
-        :param phaseshift_pos: None
-        :type phaseshift_pos: 
-        
-        :param subtract_ref: None
-        :type subtract_ref: 
-        
+        :type file: str | Path | numpy.ndarray
+        :param cx: Center x-position of the cropping ellipse
+        :type cx: int
+        :param cy: Center y-position of the cropping ellipse
+        :type cy: int
+        :param A: Ellipse total width
+        :type A: int
+        :param B: Ellipse total height
+        :type B: int
+        :param thickness: Ellipse thickness
+        :type thickness: int
+        :param angle_deg: default: 0
+        Rotation angle of the ellipse
+        :type angle_deg: float
+        :param crop_pos: default: ((500,500),1000)
+        Crop position (x,y) and width: ((posX,posY),width) of the data crop.
+        :type crop_pos: tuple(tuple(int,int), int)
+        :param plot_all: default: False
+        Plot the reconstruction steps
+        :type plot_all: bool
+        :param plot_reconstruction: default: False
+        Plot the reconstructed phase and amplitude
+        :type plot_reconstruction: bool
+        :param fft_crop_radius: default: -1
+        Defines the crop width of the masked fft used for the reconstruction step. Width is in units of the maximal extend of the ellipse.
+        If value is -1 the radius is automatically chosen to be the maximal possible width keeping it squared. 
+        :type fft_crop_radius: float
+        :param crop_shift: default: (0,0)
+        Adds shift coordinates to the center of the ellipse to compensate a shift of the interference ellipse in the data. Used for multiple reconstructions.
+        :type crop_shift: tuple(int,int)
+        :param subtract_ref: default: None
+        Subtracting a data array from the input.
+        :type subtract_ref: str | Path | numpy.ndarray of size (file.size)
     """
-    # parameters
-        # file: path to the data file
-        # cx, cy: center of the signal in fourier space
-        # rin, rout: inner and outer radius of the mask in fourier space
-        # crop_pos: tuple[tuple[int,int], int] Position to crop the raw input data
-        # plot_all: plot all the steps of the reconstruction
-        # plot_reconstruction: plot the reconstructed data
-        # fft_crop_radius: positive float:  defines the radius with which the fft should be cropped
-        # circle_shift: shifts the circle center by (x,y)
-        # phaseshift_pos: None|int 
-
+    theta = angle_deg*(np.pi/180)
+    rout = max((A,B))/2 + thickness
+    # ellipse equation with "radius" varying 't' from the input parameters of the function. returns np.ndarray. Values = 0 describing the specified ellipse
+    ellipse = lambda t:(np.power((X-cx)*np.cos(theta)+(Y-cy)*np.sin(theta),2)/((A+t)/2)**2)+(np.power(-(Y-cy)*np.cos(theta)+(X-cx)*np.sin(theta),2)/((B+t)/2)**2)-1 
 
     # read data
     plt.close("all")
@@ -81,30 +80,36 @@ def reconstruct_data( file, cx, cy, rin, rout, crop_pos, plot_all=False,
     # plt.show()
     if subtract_ref is not None:
         if isinstance(subtract_ref, np.ndarray):
-            data = data - subtract_ref 
+            sub = data - subtract_ref 
         elif (isinstance(file, Path) or isinstance(file, str)):
             ref = np.load(subtract_ref)
             sub = data - ref
-            sub[sub < 0] = 0
-            print(sub.dtype, ref.dtype, data.dtype)
-            fig, axs = plt.subplots(1,3)
+        else:
+            raise TypeError(f"Wrong type of input argument. Must be type either {type(str)}, {type(Path)} or {type(np.ndarray)}!")
+        if plot_all:
+            fig, axs = plt.subplots(1,3,sharex=True,sharey=True)
+            fig.set_size_inches(12,3)
+            axs[0].set_title("Interference raw")
+            axs[1].set_title("no Interference raw")
+            axs[2].set_title("subtracted")
             a = axs[0].imshow(data)
+            fig.colorbar(a, ax=axs[0],location='bottom')
             b = axs[1].imshow(ref)
-            c = axs[2].imshow(sub)
-            plt.colorbar(a, ax = axs[0])
-            plt.colorbar(b, ax = axs[1])
-            plt.colorbar(c, ax = axs[2])
+            fig.colorbar(b, ax=axs[1],location='bottom')
+            c = axs[2].imshow(sub,cmap = "plasma")
+            fig.colorbar(c, ax=axs[2],location='bottom')
             plt.show()
-            data = sub
+        data = sub
 
     center = crop_pos[0]
     width = crop_pos[1]
     data = data[int(center[0]-width/2):int(center[0]+width/2),
                 int(center[1]-width/2):int(center[1]+width/2)]
+    # create coordinates
     nx, ny = data.shape
-    #print(f"{nx}, {ny}")
     X, Y = np.meshgrid( np.arange(nx), np.arange(ny), indexing="ij" )
     
+    # crop radius for fft
     r_crop_fft = int(rout*fft_crop_radius)
     if fft_crop_radius == -1:
         r_crop_fft = np.min( [ np.abs( nx-cx ), np.abs( cx ), np.abs( ny-cy ), np.abs( cy ) ] )
@@ -114,44 +119,37 @@ def reconstruct_data( file, cx, cy, rin, rout, crop_pos, plot_all=False,
     fft = np.fft.fftshift( np.fft.fft2(data) )
     kx = np.fft.fftshift( np.fft.fftfreq( nx, PIXEL_SIZE ) ) * 2*np.pi
     ky = np.fft.fftshift( np.fft.fftfreq( ny, PIXEL_SIZE ) ) * 2*np.pi
-    # process fft
     fft_proc = fft.copy()
-    # phaseshift
-    if not phaseshift_pos is None:
-        phase = np.zeros(fft_proc.shape, dtype=complex)
-        a = 100
-        for i in range(phase.shape[0]):
-            for j in range(phase.shape[1]):
-                r = np.sqrt((i-(phase.shape[0]/2))**2+(j-(phase.shape[1]/2))**2)
-                phase[i][j] = ((a*r**2*phaseshift_pos/(2*299792458)) % (2*np.pi)) *1j
-        plt.figure()
-        plt.imshow(np.imag(phase))
-        plt.colorbar()
-        plt.title("applied phaseshift")
-        plt.show()
-        fft_proc = fft_proc * phase
-    
-    r = np.sqrt( (X-(cx+circle_shift[0]))**2 + (Y-(cy+circle_shift[1]))**2 )
-    mask = (r > rin) & (r < rout)
+
+    #crop fft ellipse
+    mask = (0 < ellipse(0)) & (0 > ellipse(thickness))
+    # plt.figure()
+    # plt.contour(ellipse(0))
+    # plt.colorbar()
+    # plt.title("ellipse array")
+    # plt.show()
+    # plt.figure()
+    # plt.imshow(mask)
+    # plt.colorbar()
+    # plt.title("mask array")
+    # plt.show()
+
     fft_proc[ np.logical_not( mask ) ] = 0
-    fft_proc = fft_proc[cx-r_crop_fft:cx+r_crop_fft, cy-r_crop_fft:cy+r_crop_fft]#fft_proc[cx+circle_shift[0]-r_crop_fft:cx+circle_shift[0]+r_crop_fft, cy+circle_shift[1]-r_crop_fft:cy+circle_shift[1]+r_crop_fft] #fft_proc[cx-L:cx+L,  cy-L:cy+L ]
+    fft_proc = fft_proc[cx-r_crop_fft:cx+r_crop_fft, cy-r_crop_fft:cy+r_crop_fft]#fft_proc[cx+crop_shift[0]-r_crop_fft:cx+crop_shift[0]+r_crop_fft, cy+crop_shift[1]-r_crop_fft:cy+crop_shift[1]+r_crop_fft] #fft_proc[cx-L:cx+L,  cy-L:cy+L ]
     if not fft_proc.shape[0] == fft_proc.shape[1]:
         raise IndexError(f"shape of the fft crop array is wrong: {fft_proc.shape}")
     # plt.figure()
     # plt.imshow(abs(fft_proc),cmap="plasma")
     # plt.show()
-    # reconstruct data
+    ##reconstruct data
     data_proc = np.fft.ifft2( np.fft.fftshift( fft_proc ) )
-    #print(data_proc)
     if plot_reconstruction:
         # plot
-        fig, axs = plt.subplots( 1, 2, figsize=(12,5), dpi=100 )
-        
+        fig, axs = plt.subplots( 1, 2, figsize=(12,5), dpi=100 )     
         plt.sca( axs[0] )
         plt.imshow( np.abs(data_proc).T, cmap="jet", origin="lower" )
         plt.colorbar()
         plt.title( "Reconstructed Intensity" )
- 
         plt.sca( axs[1] )
         plt.imshow( np.angle(data_proc).T, 
                    cmap="hsv",
@@ -162,7 +160,6 @@ def reconstruct_data( file, cx, cy, rin, rout, crop_pos, plot_all=False,
                 )
         plt.colorbar()
         plt.title( "Reconstructed Phase" )
- 
         plt.show()
  
     if plot_all:
@@ -184,44 +181,31 @@ def reconstruct_data( file, cx, cy, rin, rout, crop_pos, plot_all=False,
         plt.title( "FFT" )
         #plt.xlim( [cx-1.1*rout, cx+1.1*rout] )
         #plt.ylim( [cy-1.1*rout, cy+1.1*rout] )
-        
         plt.sca( axs[2] )
         plt.imshow( np.abs(fft).T, cmap="jet", origin="lower", norm=mpl.colors.LogNorm() )
         plt.colorbar()
         plt.title( "FFT Magnified" )
-        plt.xlim( [cx+circle_shift[0]-1.1*rout, cx+circle_shift[0]+1.1*rout] )
-        plt.ylim( [cy+circle_shift[1]-1.1*rout, cy+circle_shift[1]+1.1*rout] )
- 
+        plt.xlim( [cx+crop_shift[0]-1.1*rout, cx+crop_shift[0]+1.1*rout] )
+        plt.ylim( [cy+crop_shift[1]-1.1*rout, cy+crop_shift[1]+1.1*rout] )
         for ax in axs[1:3]:
-            ax.scatter( cx+circle_shift[0], cy+circle_shift[1], c='k', s=10 )
-            circle1 = plt.Circle( [cx+circle_shift[0], cy+circle_shift[1]], rin, fill=False, color='k', ls='--', lw=0.5 )
-            circle2 = plt.Circle( [cx+circle_shift[0], cy+circle_shift[1]], rout, fill=False, color='k', ls='--', lw=0.5 )
+            ax.scatter( cx+crop_shift[0], cy+crop_shift[1], c='k', s=10 )
+            circle1 = mpl.patches.Ellipse([cx+crop_shift[0], cy+crop_shift[1]], A, B, angle=angle_deg, fill=False, color='k', ls='--', lw=0.5)
+            circle2 = mpl.patches.Ellipse([cx+crop_shift[0], cy+crop_shift[1]], A+thickness, B+thickness, angle=angle_deg, fill=False, color='k', ls='--', lw=0.5)
             ax.add_artist(circle1)
             ax.add_artist(circle2)
- 
- 
-        plt.scatter( cx+circle_shift[0], cy+circle_shift[1], c='k', s=10 )
-        circle1 = plt.Circle( [cx+circle_shift[0], cy+circle_shift[1]], rin, fill=False, color='k', ls='--', lw=0.5 )
-        circle2 = plt.Circle( [cx+circle_shift[0], cy+circle_shift[1]], rout, fill=False, color='k', ls='--', lw=0.5 )
-        plt.gca().add_artist(circle1)
-        plt.gca().add_artist(circle2)
- 
- 
+        plt.scatter( cx+crop_shift[0], cy+crop_shift[1], c='k', s=10 ) 
         plt.sca( axs[3] )
         plt.imshow( np.abs(data_proc).T, cmap="jet", origin="lower" )
         plt.colorbar()
         plt.title( "Reconstructed Intensity" )
- 
         plt.sca( axs[4] )
         plt.imshow( np.angle(data_proc).T, cmap="hsv", origin="lower", vmin=-np.pi, vmax=np.pi, alpha=np.abs(data_proc).T/np.max(np.abs(data_proc)) )
         plt.colorbar()
         plt.title( "Reconstructed Phase" )
- 
         plt.sca( axs[5] )
         plt.imshow( np.angle(data_proc).T, cmap="seismic", origin="lower" )
         plt.colorbar()
         plt.title( "Reconstructed Field" )
- 
         plt.show()
  
     return data_proc
@@ -375,7 +359,8 @@ def manualFFT(E_omega:np.ndarray, omegas:np.ndarray, t, applyPhaselock = False):
         res = res + E_omega[:,:,i] * np.exp(1j * omegas[i] * t)
     return res
 
-def reconstructFromFolder(folderPath:Path, cx, cy, rin, rout, crop_pos,
+def reconstructFromFolder(folderPath:Path, cx, cy, A, B, thickness, angle,
+                    crop_pos,
                     shift = None, subtract_ref:Path = None, phaselock = 0, tilt_correction = False, plot_rec = False, plot_all = False, fft_crop_radius=6):
     """
     reconstructs the field from the data in the given folder 
@@ -418,9 +403,11 @@ def reconstructFromFolder(folderPath:Path, cx, cy, rin, rout, crop_pos,
             shift_i = (0,0)
         else:
             shift_i = (shift[0][i],shift[1][i])
-        rec = reconstruct_data(folderPath/Path(file), cx, cy, rin, rout, crop_pos, plot_all=plot_all,
-                    plot_reconstruction = plot_rec,fft_crop_radius=fft_crop_radius,circle_shift=shift_i,
-                    phaseshift_pos=motorPos,subtract_ref = subtract_ref)
+        rec = reconstruct_data(folderPath/Path(file),
+                            cx, cy, A, B, thickness, angle,
+                            crop_pos, plot_all=plot_all,
+                    plot_reconstruction = plot_rec,fft_crop_radius=fft_crop_radius,crop_shift=shift_i,
+                    subtract_ref = subtract_ref)
         savePath = folderPath/Path("reconstructionData")
         if not os.path.isdir(savePath):
             os.makedirs(savePath)
@@ -452,14 +439,11 @@ def fitCircle(points:np.ndarray, cArray:np.ndarray, sigmaFit = 1,show_statistics
     Parameters
         :param points: Data
         :type points: np.ndarray of shape (2,n)
-
         :param cArray: Filtered data array, where only points considered for the fit are have values > 0.
         :type cArray: np.ndarray of shape (x,y)
-
         :param sigmaFit: default:1 
         Defines the range of datapoints considered for the fit in sigma of the distribution of the distance to the estimated center.
         :type sigmaFit: float 
-
         :param show_statistics: default:False
         Plotting the circle fit and histograms
         :type show_statistics: bool
