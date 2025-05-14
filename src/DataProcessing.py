@@ -9,7 +9,14 @@ import os
 import re
 
 MOTOR_STEP_SIZE = 50e-9 #m
-
+def _checkDataType(arg):
+    if isinstance(arg, np.ndarray):
+        return arg 
+    elif (isinstance(arg, Path) or isinstance(arg, str)):
+            return np.load(arg)
+    else:
+        raise TypeError(f"Wrong type of input argument. Must be type either {type(str)}, {type(Path)} or {type(np.ndarray)}!")
+    
 def reconstruct_data(file, 
                      cx:int, cy:int, A:int, B:int, thickness:int, angle_deg:float = 0,
                      crop_pos = ((500,500),1000), 
@@ -67,25 +74,14 @@ def reconstruct_data(file,
 
     # read data
     plt.close("all")
-    if (isinstance(file, Path) or isinstance(file, str)):
-        data = np.load(file).astype(np.int16)
-        
-    elif isinstance(file, np.ndarray):
-        data = file
-    else:
-        raise TypeError("Wrong type for argument file")
+    data = _checkDataType(file).astype(np.int16)
     # plt.figure()
     # plt.imshow(data)
     # plt.title("loaded data")
     # plt.show()
     if subtract_ref is not None:
-        if isinstance(subtract_ref, np.ndarray):
-            sub = data - subtract_ref 
-        elif (isinstance(file, Path) or isinstance(file, str)):
-            ref = np.load(subtract_ref)
-            sub = data - ref
-        else:
-            raise TypeError(f"Wrong type of input argument. Must be type either {type(str)}, {type(Path)} or {type(np.ndarray)}!")
+        ref = _checkDataType(subtract_ref)
+        sub = data-ref
         if plot_all:
             fig, axs = plt.subplots(1,3,sharex=True,sharey=True)
             fig.set_size_inches(12,3)
@@ -98,7 +94,7 @@ def reconstruct_data(file,
             fig.colorbar(b, ax=axs[1],location='bottom')
             c = axs[2].imshow(sub,cmap = "plasma")
             fig.colorbar(c, ax=axs[2],location='bottom')
-            plt.show()
+            plt.show(block = False)
         data = sub
 
     center = crop_pos[0]
@@ -160,7 +156,7 @@ def reconstruct_data(file,
                 )
         plt.colorbar()
         plt.title( "Reconstructed Phase" )
-        plt.show()
+        plt.show(block=False)
  
     if plot_all:
         # plot
@@ -206,7 +202,7 @@ def reconstruct_data(file,
         plt.imshow( np.angle(data_proc).T, cmap="seismic", origin="lower" )
         plt.colorbar()
         plt.title( "Reconstructed Field" )
-        plt.show()
+        plt.show(block=False)
  
     return data_proc
 
@@ -359,9 +355,24 @@ def manualFFT(E_omega:np.ndarray, omegas:np.ndarray, t, applyPhaselock = False):
         res = res + E_omega[:,:,i] * np.exp(1j * omegas[i] * t)
     return res
 
+def get_motorPos(name):
+    """
+    extract the motorposition from the filename
+    
+    Parameters
+        :param name: filename
+        :type name: str
+    """
+    match = re.search(r"motorPos\s*(-?\d+)", name)
+    motor_pos = None
+    if match:
+        motor_pos = int(match.group(1))
+        motor_pos = motor_pos * 58e-9 #stepsize
+    return motor_pos
+
 def reconstructFromFolder(folderPath:Path, cx, cy, A, B, thickness, angle,
-                    crop_pos,
-                    shift = None, subtract_ref:Path = None, phaselock = 0, tilt_correction = False, plot_rec = False, plot_all = False, fft_crop_radius=6):
+                    crop_pos, removeWrongExposure = True, significance = 1.5,
+                    shift = None, subtract_ref:Path = None, phaselock = 0, plot_rec = False, plot_all = False, plot_exp_hist = False, fft_crop_radius=6):
     """
     reconstructs the field from the data in the given folder 
     and safes it as two files for real and imaginary part to import it to matlab.
@@ -379,31 +390,24 @@ def reconstructFromFolder(folderPath:Path, cx, cy, A, B, thickness, angle,
     :param subtract_ref: defines subtraction data
     :type subtract_ref: Path|numpy.ndarray|None default:None
     """
-    def get_motorPos(name):
-        match = re.search(r"motorPos\s*(-?\d+)", name)
-        motor_pos = None
-        if match:
-            motor_pos = int(match.group(1))
-            motor_pos = motor_pos * 58e-9 #stepsize
-        return motor_pos
     
     files = os.listdir(folderPath)
     files = [f for f in files if f[-4:] == ".npy"]
+    fileNames = [f[:-4] for f in files]
     minPos = max(get_motorPos(x) for x in files) #max() because its going further in -x direcion
-    i = 0
+    rawData = makeVolumeArray(folderPath)
+    if removeWrongExposure:
+        rawData, outliers = removeDoubleLitted(rawData, significance, plot_exp_hist)
+        fileNames = np.asarray(fileNames)[outliers]
+        files = np.asarray(files)[outliers]
     data = None
-    for file in files:
-        fileName = file[0:-4]
-        print(fileName)
-        motorPos = None
-        if tilt_correction:
-            motorPos = abs(get_motorPos(fileName)-minPos)
-            print(motorPos)
+    for i, file in enumerate(fileNames):
+        print(file)
         if shift is None:
             shift_i = (0,0)
         else:
             shift_i = (shift[0][i],shift[1][i])
-        rec = reconstruct_data(folderPath/Path(file),
+        rec = reconstruct_data(rawData[i,:,:],
                             cx, cy, A, B, thickness, angle,
                             crop_pos, plot_all=plot_all,
                     plot_reconstruction = plot_rec,fft_crop_radius=fft_crop_radius,crop_shift=shift_i,
@@ -412,9 +416,9 @@ def reconstructFromFolder(folderPath:Path, cx, cy, A, B, thickness, angle,
         if not os.path.isdir(savePath):
             os.makedirs(savePath)
         if not phaselock:
-            np.save(savePath/Path(fileName+"_reconstruction_complex"),rec)
-            np.savetxt(savePath/Path(f"{fileName}_reconstruction_abs.csv"),np.abs(rec), delimiter=";")
-            np.savetxt(savePath/Path(f"{fileName}_reconstruction_angle.csv"),np.angle(rec), delimiter=";")
+            np.save(savePath/Path(file+"_reconstruction_complex"),rec)
+            np.savetxt(savePath/Path(f"{file}_reconstruction_abs.csv"),np.abs(rec), delimiter=";")
+            np.savetxt(savePath/Path(f"{file}_reconstruction_angle.csv"),np.angle(rec), delimiter=";")
         else:
             if i == 0:
                 data = np.zeros(shape=(*rec.shape,len(files)), dtype=complex)
@@ -425,8 +429,7 @@ def reconstructFromFolder(folderPath:Path, cx, cy, A, B, thickness, angle,
     data = phaselockField(data)
     if not os.path.isdir(savePath/Path("phaselocked")):
         os.makedirs(savePath/Path("phaselocked"))
-    for j, file in enumerate(files):
-        fileName = file[0:-4]
+    for j, fileName in enumerate(fileNames):
         rec = data[:,:,j]
         np.save(savePath/Path("phaselocked")/Path(fileName+"_reconstruction_phaselocked_complex"),rec)
         np.savetxt(savePath/Path("phaselocked")/Path(f"{fileName}_reconstruction_phaselocked_abs.csv"),np.abs(rec), delimiter=";")
@@ -580,3 +583,39 @@ def calculateRadius(radius_px, pixelSize_mm = 3.45e-3):
 
 def calculateOGV(radius, dOmega = 2*np.pi*300000/28e-9, dl = 7):
     return radius*(dOmega/dl)
+
+def makeVolumeArray(data)->np.ndarray:
+    """
+    Combines a list of n equal sized ndarrays of size (x,y) to one array of size (x,y,n).
+
+    Parameters
+        :param data: Path or data list to combine to 3D array.
+        :type data: Path | list[np.ndarray]
+    """
+    def fuseArrays(aList):
+        return np.stack(aList)
+    if isinstance(data, (list, tuple)):
+        if isinstance(data[0], np.ndarray):
+            return fuseArrays(data)
+    elif isinstance(data, (Path)):
+        d = []
+        files = sorted([f for f in os.listdir(data) if f[-4:] == ".npy"], key = lambda x: get_motorPos(x), reverse=True)
+        for file in files:
+            d.append(np.load(data/file))
+        return fuseArrays(d)
+    
+def removeDoubleLitted(data, significance = 1.5, plot = False)->tuple[np.ndarray, np.ndarray]:
+    """
+    
+    Parameters
+        :param data: 3D data array
+        :type data: np.ndarray of size(z,x,y)
+    """
+    summed = np.sum(np.sum(data,1),1)
+    if plot:
+        plt.figure()
+        plt.hist(summed, bins = 20)
+        plt.show()
+    mask = summed > significance*np.median(summed)
+    return data[~mask], ~mask
+        
