@@ -28,7 +28,8 @@ def plotReconstruction3D(data:np.ndarray, surfaceCount = 1, minRel =.6, maxRel =
         colorscale='Plasma',
         caps=dict(x_show=False, y_show=False, z_show=False),
         skip_invalid = True,
-        render_mode="SVG")
+        render_mode="SVG"
+        )
     )
 
     #shadows
@@ -47,14 +48,14 @@ def plotReconstruction3D(data:np.ndarray, surfaceCount = 1, minRel =.6, maxRel =
     slice_xy = data[z_mid, :, :]   # shape: (y, x)
     slice_xz = data[:, y_mid, :]   # shape: (z, x)
     slice_yz = data[:, :, x_mid]   # shape: (z, y)
-
+    color = 'Blues'
     # XY-Projektion (Z = z_min)
     fig.add_trace(go.Surface(
         z=np.full_like(slice_xy, z[0]),  # bottom plane
         x=np.tile(x, (y_len, 1)),
         y=np.tile(y[:, None], (1, x_len)),
         surfacecolor=proj_xy,
-        colorscale='Plasma',
+        colorscale=color,
         showscale=False,
         opacity=0.5
     ))
@@ -65,7 +66,7 @@ def plotReconstruction3D(data:np.ndarray, surfaceCount = 1, minRel =.6, maxRel =
         x=np.tile(x, (z_len, 1)),
         z=np.tile(z[:, None], (1, x_len)),
         surfacecolor=proj_xz,
-        colorscale='Plasma',
+        colorscale=color,
         showscale=False,
         opacity=0.5
     ))
@@ -76,7 +77,7 @@ def plotReconstruction3D(data:np.ndarray, surfaceCount = 1, minRel =.6, maxRel =
         y=np.tile(y, (z_len, 1)),
         z=np.tile(z[:, None], (1, y_len)),
         surfacecolor=proj_yz,
-        colorscale='Plasma',
+        colorscale=color,
         showscale=False,
         opacity=0.5
     ))
@@ -87,7 +88,7 @@ def plotReconstruction3D(data:np.ndarray, surfaceCount = 1, minRel =.6, maxRel =
         eye=dict(x=2.25, y=2.25, z=1.25)
     )   
 
-    fig.update_layout(scene_camera=camera, title="Surfaceplot")
+    fig.update_layout(scene_camera=camera, title="Surfaceplot", scene =dict(aspectratio=dict(x=1, y=1, z=1.95)))
     # fig.update_layout(
     #     scene = dict(xaxis = dict(range=[min(x), max(x)]),
     #                 yaxis = dict(range=[min(y), max(y)],),

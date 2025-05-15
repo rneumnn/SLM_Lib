@@ -4,6 +4,7 @@ from src.DataProcessing import reconstruct_data, reconstructFromFolder, makeVolu
 from src.Visualizing import plotReconstruction3D
 from pathlib import Path
 import numpy as np
+import plotly
 
 # t.testHolo()
 # t.testHoloLS()
@@ -35,5 +36,7 @@ crop = ((664,641),800)
 data = makeVolumeArray(testDataRoot/"lighspring_OAM50_n=9_sligthBiggerAngle"/"reconstructionData")
 # print(data.shape)
 plotReconstruction3D(np.abs(data[:,:,:]),surfaceCount=4,downscale=4,opacity=0.4)
-
+# fig = plotly.colors.cyclical.swatches()
+# fig.show()
+# plotly.colors.sequential.swatches().show()
 # print(removeDoubleLitted(data,True)[1])
