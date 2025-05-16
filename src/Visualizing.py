@@ -95,3 +95,13 @@ def plotReconstruction3D(data:np.ndarray, surfaceCount = 1, minRel =.6, maxRel =
     #                 zaxis = dict( range=[min(z),max(z)],)))
 
     fig.show()
+
+def showImage(data:np.ndarray):
+    if data.dtype == complex:
+        data = np.abs(data)
+    plt.figure()
+    plt.title("ccd image")
+    plt.imshow(data, origin="lower")
+    plt.colorbar()
+    #calculate x,y in mm!
+    return plt.gcf()

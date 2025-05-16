@@ -1,7 +1,8 @@
 import tests.test as t
 from src.Hologram import Hologram
-from src.DataProcessing import reconstruct_data, reconstructFromFolder, makeVolumeArray, removeDoubleLitted
-from src.Visualizing import plotReconstruction3D
+from src.DataProcessing import *
+
+from src.Visualizing import plotReconstruction3D, showImage
 from pathlib import Path
 import numpy as np
 import plotly
@@ -35,8 +36,20 @@ crop = ((664,641),800)
 
 data = makeVolumeArray(testDataRoot/"lighspring_OAM50_n=9_sligthBiggerAngle"/"reconstructionData")
 # print(data.shape)
-plotReconstruction3D(np.abs(data[:,:,:]),surfaceCount=4,downscale=4,opacity=0.4)
+#plotReconstruction3D(np.abs(data[:,:,:]),surfaceCount=4,downscale=4,opacity=0.4)
 # fig = plotly.colors.cyclical.swatches()
 # fig.show()
 # plotly.colors.sequential.swatches().show()
 # print(removeDoubleLitted(data,True)[1])
+slice = data[24]
+# fig = showImage(slice)
+print(getCurrentAngleLS(slice, 0.75, (346,306), 50, True)[0]*(180/np.pi))
+# print(getCurrentAngleLS(slice, 0.95, (346,306), 50, True)[1]*(180/np.pi))
+
+times = np.linspace(0,data.shape[0]-1,data.shape[0])
+res = getOGV(data,times,(346,306), 50, threshhold=0.9, angleFittingAlgo=1)
+plt.figure()
+plt.plot(times,res[4]*(180/np.pi))
+plt.xlabel("time/a.u.")
+plt.ylabel("angle/°")
+plt.show()

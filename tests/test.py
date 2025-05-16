@@ -5,6 +5,10 @@ from matplotlib import pyplot as plt
 h = Hologram()
 radia, OAM = h._linearInterpolRadius(5,20,1)
 
+# print(radia,OAM)
+# plt.figure()
+# plt.plot(radia[1:], OAM, marker = "x")
+# plt.show()
 def testHolo():
     z = h.setZernikeCorrection()
     #h.parabolaOAM(11,20,75)

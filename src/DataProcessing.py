@@ -7,6 +7,7 @@ import matplotlib as mpl
 from pathlib import Path
 import os
 import re
+from .Visualizing import showImage
 
 MOTOR_STEP_SIZE = 50e-9 #m
 def _checkDataType(arg):
@@ -73,7 +74,6 @@ def reconstruct_data(file,
     ellipse = lambda t:(np.power((X-cx)*np.cos(theta)+(Y-cy)*np.sin(theta),2)/((A+t)/2)**2)+(np.power(-(Y-cy)*np.cos(theta)+(X-cx)*np.sin(theta),2)/((B+t)/2)**2)-1 
 
     # read data
-    plt.close("all")
     data = _checkDataType(file).astype(np.int16)
     # plt.figure()
     # plt.imshow(data)
@@ -88,11 +88,11 @@ def reconstruct_data(file,
             axs[0].set_title("Interference raw")
             axs[1].set_title("no Interference raw")
             axs[2].set_title("subtracted")
-            a = axs[0].imshow(data)
+            a = axs[0].imshow(data, origin = "lower")
             fig.colorbar(a, ax=axs[0],location='bottom')
-            b = axs[1].imshow(ref)
+            b = axs[1].imshow(ref, origin = "lower")
             fig.colorbar(b, ax=axs[1],location='bottom')
-            c = axs[2].imshow(sub,cmap = "plasma")
+            c = axs[2].imshow(sub,cmap = "plasma", origin = "lower")
             fig.colorbar(c, ax=axs[2],location='bottom')
             plt.show(block = False)
         data = sub
@@ -544,10 +544,14 @@ def findRadius(img:np.ndarray, centerXY:tuple[int,int], filterR_px = 30, threshh
 
         :param showStatistics: default: False Plot fitting statistics
         :type showStatistics: bool
-        
+    _
+    :return: radius, center
+    :rtype: tuple[float, float]
     """
     #filter the 0th order
     crop = img.copy()
+    if crop.dtype == complex:
+        crop = np.abs(crop)
     X, Y = np.meshgrid(np.linspace(1,img.shape[1],img.shape[1]),np.linspace(1,img.shape[0],img.shape[0]))
     # print(img.shape)
     # print(X.shape)
@@ -565,24 +569,149 @@ def findRadius(img:np.ndarray, centerXY:tuple[int,int], filterR_px = 30, threshh
     maxima = crop[max_mask]
     crop[~max_mask] = 0
     center, radius = fitCircle(max_points.reshape(2,(max_points.shape[1])),c_array,sigma_Fit, showStatistics)
-
-    plt.figure()
-    plt.imshow(crop)
-    plt.scatter(*max_points, marker="x", color = "red")
-    plt.scatter(*center)
-    c = plt.Circle(center,radius, color = "green", ls = ":",fill=False)
-    ax = plt.gca()
-    ax.add_patch(c)
-    ax.add_patch(plt.Circle(center, filterR_px, color = "yellow", ls = ":",fill=False))
-    #rad = plt.Circle(estimated_center)
-    plt.show()
-    return radius
+    if showStatistics:
+        plt.figure()
+        plt.imshow(crop, origin = "lower")
+        plt.scatter(*max_points, marker="x", color = "red")
+        plt.scatter(*center)
+        c = plt.Circle(center,radius, color = "green", ls = ":",fill=False)
+        ax = plt.gca()
+        ax.add_patch(c)
+        ax.add_patch(plt.Circle(center, filterR_px, color = "yellow", ls = ":",fill=False))
+        #rad = plt.Circle(estimated_center)
+        plt.show()
+    return radius, center
 
 def calculateRadius(radius_px, pixelSize_mm = 3.45e-3):
     return radius_px*pixelSize_mm
 
-def calculateOGV(radius, dOmega = 2*np.pi*300000/28e-9, dl = 7):
-    return radius*(dOmega/dl)
+def getCurrentAngleLS(lsSLice:np.ndarray, threshhold, center:tuple[int,int], maskRadius:int, showPlot = False, showFit = False)->tuple[float,float]:
+    """
+    Gets the angle to the x-axis (counterclockwhise) of the lightspring slice. The coordinatesystem is centered at `center`.
+
+    Parameters
+        :param lsSLice: single temporal slice of reconstruction data of lightspring
+        :type lsSLice: numpy.ndarray of shape(n,n)
+        :param threshhold: threshhold of radius intensitys that will be considered for the fit
+        :type threshhold: float
+        :param center: center of the lightspring (use fitCircle is recommended)
+        :type center: tuple[int,int]
+        :param maskRadius: radius of the center mask. used to neglect intensitys inside the spring (i.e. 0th order)
+        :type maskRadius: int
+        :param showPlot: False
+        show fitting statistic
+        :type showPlot: bool
+        :param showFit: False
+        show fitting plot
+        :type showFit: bool
+    _________________________
+        :return: tuple of angles based on diffrent calculation algorythms:
+        (maximumValue, squared weighted average)
+        :rtype: tuple[float]
+
+    """
+    x,y = np.meshgrid(np.linspace(0,lsSLice.shape[0]-1,lsSLice.shape[0]), 
+                      np.linspace(0,lsSLice.shape[1]-1,lsSLice.shape[1]))
+    mask = np.ones(lsSLice.shape,dtype=bool)
+    mask[np.sqrt(np.power(x-center[0],2)+np.power(y-center[1],2))<=maskRadius] = 0
+    if type(center) == np.ndarray:
+        center = tuple(center)
+
+    sliceMasked = np.abs(np.copy(lsSLice))
+    sliceMasked[~mask] = 0
+    cMax =np.max(sliceMasked)
+    indexVals = np.unravel_index(np.where(sliceMasked >= cMax*threshhold),mask.shape)[1] 
+    #consider to unite with the circle-radius fit to sort out points with higher radius
+
+    def getAngle(point):
+        #return angle e [0,2pi]
+        dY=x[point]-x[center]
+        dX=y[point]-y[center]
+        angle = np.arctan2(dY,dX)
+        #map so that angle[0,2pi]
+        if angle < 0:
+            angle = np.interp(angle,[-np.pi,0],[np.pi,2*np.pi])
+        return angle
+   
+    #get weighted average of these points
+    nVals = np.ravel(sliceMasked)[np.ravel_multi_index(indexVals,sliceMasked.shape)]
+    nVals = np.interp(
+        nVals,
+        [nVals.min(), nVals.max()],
+        [0,1]
+    )
+    nVals = np.power(nVals,2)
+    if showPlot:
+        plt.figure()
+        plt.hist(nVals, bins=10)
+        plt.title("nVals")
+
+    massPoint = (round(np.average(indexVals[1], weights=nVals)), round(np.average(indexVals[0],weights=nVals)))
+
+    maxPoint =  np.unravel_index(np.flip(np.where(sliceMasked == np.max(sliceMasked))), mask.shape)[1].flatten()
+    maxPoint = (maxPoint[0],maxPoint[1])
+    if showFit:
+        plt.figure()
+        plt.title("fit lightspring intensity")
+        plt.imshow(np.abs(sliceMasked),origin="lower")
+        plt.scatter(indexVals[1],indexVals[0],marker="x", color ="r")
+        plt.scatter(*massPoint,marker="+", color = "y", label = f"weighted squared ({round(getAngle(massPoint)*(180/np.pi),1)}°)")
+        plt.scatter(*maxPoint, marker="+", color = "lime", label = f"maximum ({round(getAngle(maxPoint)*(180/np.pi),2)}°)")
+        plt.colorbar()
+        plt.legend()
+        plt.show()
+    return (getAngle(maxPoint), getAngle(massPoint))
+
+def getOGV(lightspringData:np.ndarray, times:np.ndarray, estimatedCenter:tuple[int,int], maskRadius:int,
+           threshhold = 0.8, sigma_Fit = 1, showStatistics = False, showFit = False, angleFittingAlgo = 1):
+    """
+    Calculates the OGV and radius for each slice of `lightspringData` aswell as the average OGV and radius value, which for exemple can be used to calculate the LOGV after.
+    The OGV is calculated by differentiating the angle gained from `getCurrentAngleLS`-function for the given time values in `times`.
+    The radii are calculated using the `findRadius`-function.
+
+    Parameters
+        :param lightspringData: 
+        :type lightspringData: numpy.ndarray of size(t,x,x)
+        :param times: array containing the timestamps for each slice (axis 0) of lightspringData
+        :type times: numpy.ndarray of size(t) type(float)
+        :param estimatedCenter: 
+        :type estimatedCenter: tuple[int,int]
+        :param maskRadius: 
+        :type maskRadius: int
+        :param threshhold: default: 0.8 Threshhold for the data to be consired for the fit.
+        :type threshhold: float
+
+        :param sigmaFit: default:1 
+        Defines the range of datapoints considered for the fit in sigma of the distribution of the distance to the estimated center.
+        :type sigmaFit: float 
+
+        :param showStatistics: default: False Plot fitting statistics
+        :type showStatistics: bool
+
+        :param showFit: default: False Plot fit
+        :type showFit: bool
+
+        :param angleFitAlgo: default: 1
+        0 = maximum
+        1 = squared weighted average (recommended)
+        <br>
+        :return: averageOGV, averageRadius, OGV_array, radius_array, angle_array
+        :rtype: tuple[float, float, ndarray(shape(t), type(float)), ndarray(shape(t), type(float), ndarray(shape(t), type(float))]
+    """
+    meassured = np.zeros((lightspringData.shape[0],2)) # axis1: 0: r, 1: angle
+    for i in range(meassured.shape[0]):
+        r, center = findRadius(lightspringData[i,:,:], estimatedCenter, maskRadius, threshhold, sigma_Fit, showStatistics)
+        angle = getCurrentAngleLS(lightspringData[i,:,:], threshhold, center, r*0.8, showStatistics, showFit)[angleFittingAlgo]
+        r = calculateRadius(r)
+        meassured[i,0]=r
+        meassured[i,1]=angle
+    ogv = np.gradient(meassured[:,1], times)
+    avgOGV = np.average(ogv)
+    avgRadius = np.average(meassured[:,0])
+    return avgOGV, avgRadius, ogv, meassured[:,0], meassured[:,1]
+
+def calculateLOGV_theory(radius_mm, dOmega = 2*np.pi*300000/28e-9, dl = 7):
+    return radius_mm*(dOmega/dl)
 
 def makeVolumeArray(data)->np.ndarray:
     """
