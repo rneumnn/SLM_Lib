@@ -10,6 +10,7 @@ import re
 from .Visualizing import showImage
 
 MOTOR_STEP_SIZE = 50e-9 #m
+C0 = 299792458  #m/s
 def _checkDataType(arg):
     if isinstance(arg, np.ndarray):
         return arg 
@@ -355,7 +356,7 @@ def manualFFT(E_omega:np.ndarray, omegas:np.ndarray, t, applyPhaselock = False):
         res = res + E_omega[:,:,i] * np.exp(1j * omegas[i] * t)
     return res
 
-def get_motorPos(name):
+def getMotorPos(name):
     """
     extract the motorposition from the filename
     
@@ -367,8 +368,20 @@ def get_motorPos(name):
     motor_pos = None
     if match:
         motor_pos = int(match.group(1))
-        motor_pos = motor_pos * 58e-9 #stepsize
+        motor_pos = motor_pos * MOTOR_STEP_SIZE
     return motor_pos
+
+def calculateTiming(motorPos):
+    """
+    Parameters
+    :param motorPos: Motorposition in m
+    :type motorPos: float | numpy.ndarray
+    """
+    return motorPos/C0
+
+def normalizeTimestamps(times:np.ndarray):
+    return times - (times.min())
+
 
 def reconstructFromFolder(folderPath:Path, cx, cy, A, B, thickness, angle,
                     crop_pos, removeWrongExposure = True, significance = 1.5,
@@ -394,8 +407,8 @@ def reconstructFromFolder(folderPath:Path, cx, cy, A, B, thickness, angle,
     files = os.listdir(folderPath)
     files = [f for f in files if f[-4:] == ".npy"]
     fileNames = [f[:-4] for f in files]
-    minPos = max(get_motorPos(x) for x in files) #max() because its going further in -x direcion
-    rawData = makeVolumeArray(folderPath)
+    minPos = max(getMotorPos(x) for x in files) #max() because its going further in -x direcion
+    rawData, times = makeVolumeArray(folderPath)
     if removeWrongExposure:
         rawData, outliers = removeDoubleLitted(rawData, significance, plot_exp_hist)
         fileNames = np.asarray(fileNames)[outliers]
@@ -544,8 +557,8 @@ def findRadius(img:np.ndarray, centerXY:tuple[int,int], filterR_px = 30, threshh
 
         :param showStatistics: default: False Plot fitting statistics
         :type showStatistics: bool
-    _
-    :return: radius, center
+    <br>
+    :return: radius in pixels, center in pixels
     :rtype: tuple[float, float]
     """
     #filter the 0th order
@@ -583,7 +596,10 @@ def findRadius(img:np.ndarray, centerXY:tuple[int,int], filterR_px = 30, threshh
     return radius, center
 
 def calculateRadius(radius_px, pixelSize_mm = 3.45e-3):
-    return radius_px*pixelSize_mm
+    """
+    calculates the radius (in m) from pixels
+    """
+    return radius_px*pixelSize_mm*1e-3
 
 def getCurrentAngleLS(lsSLice:np.ndarray, threshhold, center:tuple[int,int], maskRadius:int, showPlot = False, showFit = False)->tuple[float,float]:
     """
@@ -695,31 +711,35 @@ def getOGV(lightspringData:np.ndarray, times:np.ndarray, estimatedCenter:tuple[i
         0 = maximum
         1 = squared weighted average (recommended)
         <br>
-        :return: averageOGV, averageRadius, OGV_array, radius_array, angle_array
-        :rtype: tuple[float, float, ndarray(shape(t), type(float)), ndarray(shape(t), type(float), ndarray(shape(t), type(float))]
+        :return: averageOGV[rad/m], averageRadius[m], OGV_array[rad/m], radius_array[m], angle_array[rad]
+        :rtype: tuple[float, float, ndarray(shape(t), type(float)), ndarray(shape(t), type(float)), ndarray(shape(t), type(float))]
     """
     meassured = np.zeros((lightspringData.shape[0],2)) # axis1: 0: r, 1: angle
     for i in range(meassured.shape[0]):
         r, center = findRadius(lightspringData[i,:,:], estimatedCenter, maskRadius, threshhold, sigma_Fit, showStatistics)
-        angle = getCurrentAngleLS(lightspringData[i,:,:], threshhold, center, r*0.8, showStatistics, showFit)[angleFittingAlgo]
+        angle = getCurrentAngleLS(lightspringData[i,:,:], threshhold, center, r*0.65, showStatistics, showFit)[angleFittingAlgo]
         r = calculateRadius(r)
         meassured[i,0]=r
         meassured[i,1]=angle
+    #put fit here instead of gradient
     ogv = np.gradient(meassured[:,1], times)
-    avgOGV = np.average(ogv)
-    avgRadius = np.average(meassured[:,0])
+    avgOGV = np.nanmean(ogv)
+    avgRadius = np.nanmean(meassured[:,0])
     return avgOGV, avgRadius, ogv, meassured[:,0], meassured[:,1]
 
-def calculateLOGV_theory(radius_mm, dOmega = 2*np.pi*300000/28e-9, dl = 7):
-    return radius_mm*(dOmega/dl)
+def calculateLOGV_theory(radius, dOmega = 2*np.pi*C0/28e-9, dl = 7):
+    return radius*(dOmega/dl)
 
 def makeVolumeArray(data)->np.ndarray:
     """
-    Combines a list of n equal sized ndarrays of size (x,y) to one array of size (x,y,n).
+    Combines a list of n equal sized ndarrays of size (x,y) to one array of size (n,x,y).
 
     Parameters
         :param data: Path or data list to combine to 3D array.
         :type data: Path | list[np.ndarray]
+        <br>
+        :return: 3 dim data array. If data is type(Path) also return the timings.
+        :rtype: numpy.ndarray(type(any), size(n,x,y)) | tuple(ndarray(type(any), size(n,x,y)), ndarray(type(float), size(n)))
     """
     def fuseArrays(aList):
         return np.stack(aList)
@@ -728,10 +748,12 @@ def makeVolumeArray(data)->np.ndarray:
             return fuseArrays(data)
     elif isinstance(data, (Path)):
         d = []
-        files = sorted([f for f in os.listdir(data) if f[-4:] == ".npy"], key = lambda x: get_motorPos(x), reverse=True)
+        times = []
+        files = sorted([f for f in os.listdir(data) if f[-4:] == ".npy"], key = lambda x: getMotorPos(x), reverse=True)
         for file in files:
             d.append(np.load(data/file))
-        return fuseArrays(d)
+            times.append(calculateTiming(getMotorPos(file)))
+        return fuseArrays(d), np.asarray(times)
     
 def removeDoubleLitted(data, significance = 1.5, plot = False)->tuple[np.ndarray, np.ndarray]:
     """
@@ -747,4 +769,14 @@ def removeDoubleLitted(data, significance = 1.5, plot = False)->tuple[np.ndarray
         plt.show()
     mask = summed > significance*np.median(summed)
     return data[~mask], ~mask
-        
+
+def cropByTimestamp(data:np.ndarray, times:np.ndarray, tMin, tMax):
+    """
+    Crops given data (shape(t)) with timestamps `times` (shape(t)) by the given timestamp boundarys corresponing to the data.
+
+    :return: cropped data, cropped times
+    :rtype: tuple[np.ndarray(shape(tnew,), np.ndarray(shape(tnew)))]
+    """
+
+    index = np.where((times<=tMax)&(times>=tMin))
+    return data[index], times[index]       
