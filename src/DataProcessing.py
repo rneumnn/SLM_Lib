@@ -377,7 +377,7 @@ def calculateTiming(motorPos):
     :param motorPos: Motorposition in m
     :type motorPos: float | numpy.ndarray
     """
-    return motorPos/C0
+    return motorPos/C0*2
 
 def normalizeTimestamps(times:np.ndarray):
     return times - (times.min())
@@ -469,7 +469,7 @@ def fitCircle(points:np.ndarray, cArray:np.ndarray, sigmaFit = 1,show_statistics
     # print(f"Center: {estimated_center_i}")
     #fit radius
     distances = np.linalg.norm(points - estimated_center_i.reshape((2,1)), axis=0)
-    mean, std =np.mean(distances), np.std(distances)
+    mean, std =np.nanmean(distances), np.nanstd(distances)
     distances_noOL = distances[((distances>mean-sigmaFit*std) & (distances < mean + sigmaFit*std))]
     # print(distances_noOL)
     if show_statistics:
@@ -478,7 +478,7 @@ def fitCircle(points:np.ndarray, cArray:np.ndarray, sigmaFit = 1,show_statistics
         plt.hist([distances,distances_noOL],bins)
         plt.title("histogram distances")
         plt.show()
-    estimated_radius_i = np.mean(distances_noOL)
+    estimated_radius_i = np.nanmean(distances_noOL)
 
     print(f"Estimated Initial Center: {estimated_center_i}")
     print(f"Estimated Initial Radius: {estimated_radius_i}")
@@ -575,7 +575,7 @@ def findRadius(img:np.ndarray, centerXY:tuple[int,int], filterR_px = 30, threshh
     # plt.show()
     c_array = img.copy()
     c_array[~c_mask] = 0
-    max_mask = crop >= threshhold*np.max(crop)
+    max_mask = crop > threshhold*np.nanmax(crop)
     max_points = np.indices(crop.shape)
     max_points = np.asarray(((max_points[1][max_mask]),(max_points[0][max_mask])))
     # print(max_points)
@@ -628,17 +628,21 @@ def getCurrentAngleLS(lsSLice:np.ndarray, threshhold, center:tuple[int,int], mas
     """
     x,y = np.meshgrid(np.linspace(0,lsSLice.shape[0]-1,lsSLice.shape[0]), 
                       np.linspace(0,lsSLice.shape[1]-1,lsSLice.shape[1]))
-    mask = np.ones(lsSLice.shape,dtype=bool)
-    mask[np.sqrt(np.power(x-center[0],2)+np.power(y-center[1],2))<=maskRadius] = 0
+    if np.isnan(maskRadius):
+        mask = np.zeros(lsSLice.shape,dtype=bool)
+    else:
+        mask = np.ones(lsSLice.shape,dtype=bool)
+        mask[np.sqrt(np.power(x-center[0],2)+np.power(y-center[1],2))<=maskRadius] = 0
     if type(center) == np.ndarray:
         center = tuple(center)
 
     sliceMasked = np.abs(np.copy(lsSLice))
     sliceMasked[~mask] = 0
     cMax =np.max(sliceMasked)
-    indexVals = np.unravel_index(np.where(sliceMasked >= cMax*threshhold),mask.shape)[1] 
+    indexVals = np.unravel_index(np.where(sliceMasked > cMax*threshhold),mask.shape)[1] 
     #consider to unite with the circle-radius fit to sort out points with higher radius
-
+    if indexVals.size == 0:
+        return np.nan, np.nan, np.nan
     def getAngle(point):
         #return angle e [0,2pi]
         dY=x[point]-x[center]
@@ -656,14 +660,14 @@ def getCurrentAngleLS(lsSLice:np.ndarray, threshhold, center:tuple[int,int], mas
         [nVals.min(), nVals.max()],
         [0,1]
     )
-    nVals = np.power(nVals,2)
+    nVals2 = np.power(nVals,2)
     if showPlot:
         plt.figure()
         plt.hist(nVals, bins=10)
         plt.title("nVals")
 
     massPoint = (round(np.average(indexVals[1], weights=nVals)), round(np.average(indexVals[0],weights=nVals)))
-
+    weightedSquared = (round(np.average(indexVals[1], weights=nVals2)), round(np.average(indexVals[0],weights=nVals2)))
     maxPoint =  np.unravel_index(np.flip(np.where(sliceMasked == np.max(sliceMasked))), mask.shape)[1].flatten()
     maxPoint = (maxPoint[0],maxPoint[1])
     if showFit:
@@ -676,48 +680,92 @@ def getCurrentAngleLS(lsSLice:np.ndarray, threshhold, center:tuple[int,int], mas
         plt.colorbar()
         plt.legend()
         plt.show()
-    return (getAngle(maxPoint), getAngle(massPoint))
+    return (getAngle(maxPoint), getAngle(weightedSquared), getAngle(massPoint))
 
 def getOGV(lightspringData:np.ndarray, times:np.ndarray, estimatedCenter:tuple[int,int], maskRadius:int,
-           threshhold = 0.8, sigma_Fit = 1, showStatistics = False, showFit = False, angleFittingAlgo = 1):
+            threshhold = 0.8, sigma_Fit = 1,
+            fromIsosurface = False, isoLevel = .5, isoTolerance = 10,
+            showStatistics = False, showFit = False, angleFittingAlgo = 1):
     """
-    Calculates the OGV and radius for each slice of `lightspringData` aswell as the average OGV and radius value, which for exemple can be used to calculate the LOGV after.
-    The OGV is calculated by differentiating the angle gained from `getCurrentAngleLS`-function for the given time values in `times`.
-    The radii are calculated using the `findRadius`-function.
+    Calculates the OGV (Optical Gauge Velocity) and radius for each slice of the `lightspringData`, as well as the
+    average OGV and average radius. These values can be used to compute the LOGV (Local Optical Gauge Velocity), among other metrics.
+
+    The OGV is computed by differentiating the angle obtained from the `getCurrentAngleLS` function using the
+    corresponding time values provided in `times`. Radii are computed using the `findRadius` function.
 
     Parameters
-        :param lightspringData: 
-        :type lightspringData: numpy.ndarray of size(t,x,x)
-        :param times: array containing the timestamps for each slice (axis 0) of lightspringData
-        :type times: numpy.ndarray of size(t) type(float)
-        :param estimatedCenter: 
-        :type estimatedCenter: tuple[int,int]
-        :param maskRadius: 
-        :type maskRadius: int
-        :param threshhold: default: 0.8 Threshhold for the data to be consired for the fit.
-        :type threshhold: float
+    ----------
+    lightspringData : np.ndarray
+        3D array representing the light spring data with shape (t, x, x), where `t` is the number of time slices.
+    
+    times : np.ndarray
+        1D array of shape (t,) containing the timestamp for each time slice of `lightspringData`.
+    
+    estimatedCenter : tuple[int, int]
+        Coordinates (x, y) of the estimated center of the light spring in each slice.
 
-        :param sigmaFit: default:1 
-        Defines the range of datapoints considered for the fit in sigma of the distribution of the distance to the estimated center.
-        :type sigmaFit: float 
+    maskRadius : int
+        Radius of the circular mask applied around the estimated center for region-of-interest selection.
+    
+    threshhold : float, optional (default=0.8)
+        Threshold used to filter the data before fitting. Only values above `threshhold * max(data)` are considered.
 
-        :param showStatistics: default: False Plot fitting statistics
-        :type showStatistics: bool
+    sigma_Fit : float, optional (default=1.0)
+        Standard deviation range (in sigma units) of distances from the estimated center used for fitting the radius.
 
-        :param showFit: default: False Plot fit
-        :type showFit: bool
+    fromIsosurface : bool, optional (default=True)
+        If True, the angle is calculated based on an isosurface mask with level defined by `trheshold`. Otherwise, raw data is used.
 
-        :param angleFitAlgo: default: 1
-        0 = maximum
-        1 = squared weighted average (recommended)
-        <br>
-        :return: averageOGV[rad/m], averageRadius[m], OGV_array[rad/m], radius_array[m], angle_array[rad]
-        :rtype: tuple[float, float, ndarray(shape(t), type(float)), ndarray(shape(t), type(float)), ndarray(shape(t), type(float))]
+    isoLevel : float [0;1]
+        relative isosurface level
+
+    isoTolerance : float
+        Tolerance range around the isosurface level
+
+    showStatistics : bool, optional (default=False)
+        If True, plots statistical information about the fitting process.
+
+    showFit : bool, optional (default=False)
+        If True, plots the fit for each slice.
+
+    angleFittingAlgo : int, optional (default=1)
+        Only considered if `fromIsosurface` is False!
+        Algorithm used to determine the current angle from the light spring:
+            0 = Maximum intensity location
+            1 = Squared weighted average (recommended)
+            2 = Center of mass (linear weighted average)
+
+    Returns
+    -------
+    averageOGV : float
+        The average optical gauge velocity over all time slices [rad/m].
+
+    averageRadius : float
+        The average radius computed over all time slices [m].
+
+    OGV_array : np.ndarray
+        Array of shape (t,) containing the OGV for each slice [rad/m].
+
+    radius_array : np.ndarray
+        Array of shape (t,) containing the radius for each slice [m].
+
+    angle_array : np.ndarray
+        Array of shape (t,) containing the angular position for each slice [rad].
     """
-    meassured = np.zeros((lightspringData.shape[0],2)) # axis1: 0: r, 1: angle
+    data = np.copy(lightspringData)
+    if fromIsosurface:
+        mask = makeIsosurfaceMask(lightspringData, isoLevel, isoTolerance)
+        data[~mask] = 0
+        angleFittingAlgo = 2 #center of mass
+        m = np.any(mask,axis= (1,2))
+    meassured = np.zeros((data.shape[0],2)) # axis1: 0: r, 1: angle
     for i in range(meassured.shape[0]):
-        r, center = findRadius(lightspringData[i,:,:], estimatedCenter, maskRadius, threshhold, sigma_Fit, showStatistics)
-        angle = getCurrentAngleLS(lightspringData[i,:,:], threshhold, center, r*0.65, showStatistics, showFit)[angleFittingAlgo]
+        # if fromIsosurface and not m[i]:
+        #     meassured[i,0]=np.nan
+        #     meassured[i,1]=np.nan
+        #     continue
+        r, center = findRadius(data[i,:,:], estimatedCenter, maskRadius, threshhold, sigma_Fit, showStatistics)
+        angle = getCurrentAngleLS(data[i,:,:], threshhold, center, r*0.65, showStatistics, showFit)[angleFittingAlgo]
         r = calculateRadius(r)
         meassured[i,0]=r
         meassured[i,1]=angle
@@ -727,7 +775,7 @@ def getOGV(lightspringData:np.ndarray, times:np.ndarray, estimatedCenter:tuple[i
     avgRadius = np.nanmean(meassured[:,0])
     return avgOGV, avgRadius, ogv, meassured[:,0], meassured[:,1]
 
-def calculateLOGV_theory(radius, dOmega = 2*np.pi*C0/28e-9, dl = 7):
+def calculateLOGV_theory(radius, dOmega = 2*np.pi*C0/778e-9 - 2*np.pi*C0/806e-9 , dl = 7):
     return radius*(dOmega/dl)
 
 def makeVolumeArray(data)->np.ndarray:
@@ -780,3 +828,31 @@ def cropByTimestamp(data:np.ndarray, times:np.ndarray, tMin, tMax):
 
     index = np.where((times<=tMax)&(times>=tMin))
     return data[index], times[index]       
+
+def makeIsosurfaceMask(data:np.ndarray, level:float, epsilon: float = 1):
+    """
+    Makes a boolean mask to extract an isosurface specified by the given level [0;1] from a volume array given in `data` in the range of `level`+-`epsilon`
+
+    Parameters
+    ----------
+    data : np.ndarray
+        Volume array of shape (n, x, y)
+
+    level : float [0,1] 
+        relative isosurface level
+
+    epsilon : float
+        Tolerance range around the isosurface level
+    Returns
+    -------
+    np.ndarray
+        A boolean mask where the isosurface is approximately located
+    """
+
+    if not (0 <= level <= 1):
+        raise ValueError("Parameter `level` must be in the range [0, 1]")
+
+    threshold = data.max() * level
+    mask = np.abs(data - threshold) < epsilon
+    return mask
+    
