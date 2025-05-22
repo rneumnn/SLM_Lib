@@ -357,7 +357,7 @@ def showOGV(
         ax.plot(OAM[i], fit_params[1], marker=marker, color=colors[i], label=f'Experimental OGV {OAM[i]}')
 
     #Plot Theoretical OGV
-    ax.plot(OAM, -OGV_theory, ls="-", color="r", label="Theoretical OGV")
+    ax.hlines(-OGV_theory, 0, 200, ls="-", color="r", label="Theoretical OGV")
 
     ax.set_xlabel("OAM")
     ax.set_ylabel("OGV (rad/s)")
