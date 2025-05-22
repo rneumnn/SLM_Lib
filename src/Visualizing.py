@@ -2,6 +2,7 @@ import matplotlib as mpl
 import matplotlib.pyplot as plt
 import numpy as np
 import plotly.graph_objects as go
+from statsmodels.robust.robust_linear_model import RLMResults
 
 """
     Package to visualize reconstructed electric fields
@@ -105,3 +106,70 @@ def showImage(data:np.ndarray):
     plt.colorbar()
     #calculate x,y in mm!
     return plt.gcf()
+
+def showAngleFit(angleData: np.ndarray, timings: np.ndarray, angleFit: list[RLMResults], intensityData: np.ndarray = None, cmap=mpl.colormaps.get_cmap("perula")):
+    """
+    Plots each dataset in angleData with the corresponding robust linear fit against the given timings.
+    Optionally, plots the maximum of an intensity dataset on a secondary y-axis for each angle dataset.
+
+    Parameters
+    ----------
+    angleData : np.ndarray
+        2D array of angle data, shape (n, t), where n is the number of datasets and t is the number of time points.
+    timings : np.ndarray
+        1D array of timestamps, shape (t,).
+    angleFit : list[RLMResults]
+        List of fitted robust linear model results, one for each dataset.
+    intensityData : np.ndarray, optional
+        2D array of intensity data, shape (n, t), where each row corresponds to the intensity for one angle dataset.
+    cmap : matplotlib.colors.Colormap, optional
+        Colormap to use for plotting different datasets.
+
+    Returns
+    -------
+    fig : matplotlib.figure.Figure
+        The matplotlib figure object.
+    """
+    import matplotlib.pyplot as plt
+
+    n = angleData.shape[0]
+    if cmap is None:
+        cmap = plt.get_cmap('tab10')
+    colors = cmap(np.linspace(0, 1, n))
+    fig, ax1 = plt.subplots()
+    markers = ['o', 's', '^', 'D', 'v', 'P', '*', 'X', '<', '>','+', '.']  # extend if needed
+
+    if intensityData is not None:
+        ax2 = ax1.twinx()
+    else:
+        ax2 = None
+
+    for i in range(n):
+        marker = markers[i % len(markers)]
+        # Plot angle data with dashed line and marker
+        ax1.plot(timings, angleData[i], ls='--', marker=marker, color=colors[i], label=f'Dataset {i+1}')
+        # Plot fit with solid line and same marker
+        fit_params = angleFit[i].params
+        fit_line = fit_params[0] + fit_params[1] * timings
+        ax1.plot(timings, fit_line, ls='-', marker=marker, color=colors[i], label=f'Fit {i+1}')
+        # Plot intensity max if provided
+        if intensityData is not None:
+            ax2.plot(timings, intensityData[i], ls=':', marker=marker, color=colors[i], label=f'Intensity {i+1}')
+
+    ax1.set_xlabel("Time")
+    ax1.set_ylabel("Angle")
+    if ax2:
+        ax2.set_ylabel("Intensity (max)")
+
+    # Combine legends from both axes if needed
+    handles1, labels1 = ax1.get_legend_handles_labels()
+    if ax2:
+        handles2, labels2 = ax2.get_legend_handles_labels()
+        ax2.legend(handles1 + handles2, labels1 + labels2, loc='best')
+    else:
+        ax1.legend(loc='best')
+
+    plt.title("Angle Data with Robust Linear Fits and Intensity Max")
+    plt.tight_layout()
+    plt.show()
+    return fig
