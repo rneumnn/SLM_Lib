@@ -20,7 +20,7 @@ def _checkDataType(arg):
     else:
         raise TypeError(f"Wrong type of input argument. Must be type either {type(str)}, {type(Path)} or {type(np.ndarray)}!")
     
-def reconstruct_data(file, 
+def reconstructData(file, 
                      cx:int, cy:int, A:int, B:int, thickness:int, angle_deg:float = 0,
                      crop_pos = ((500,500),1000), 
                      plot_all:bool=False, 
@@ -492,7 +492,7 @@ def reconstructFromFolder(folderPath:Path, cx, cy, A, B, thickness, angle,
             shift_i = (0,0)
         else:
             shift_i = (shift[0][i],shift[1][i])
-        rec = reconstruct_data(rawData[i,:,:],
+        rec = reconstructData(rawData[i,:,:],
                             cx, cy, A, B, thickness, angle,
                             crop_pos, plot_all=plot_all,
                     plot_reconstruction = plot_rec,fft_crop_radius=fft_crop_radius,crop_shift=shift_i,

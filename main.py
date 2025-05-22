@@ -20,7 +20,7 @@ import plotly
 testDataRoot = Path(r"C:\Projekte\SLM\testData OGV")
 ellipse = (457,404,80,81, 14, 0)
 crop = ((664,641),800)
-# rec = reconstruct_data(testDataRoot/"lighspring_OAM50_n=9_sligthBiggerAngle"/"lighspring_tc50_n=9_sligthBiggerAngle_motorPos-114383.npy",
+# rec = reconstructData(testDataRoot/"lighspring_OAM50_n=9_sligthBiggerAngle"/"lighspring_tc50_n=9_sligthBiggerAngle_motorPos-114383.npy",
 #                        *ellipse,
 #                        crop,
 #                        1,
