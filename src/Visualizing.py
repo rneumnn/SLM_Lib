@@ -4,6 +4,8 @@ import numpy as np
 import plotly.graph_objects as go
 from statsmodels.robust.robust_linear_model import RLMResults
 
+C0 = 299792458  #m/s
+
 """
     Package to visualize reconstructed electric fields
     """
@@ -107,32 +109,52 @@ def showImage(data:np.ndarray):
     #calculate x,y in mm!
     return plt.gcf()
 
-def showAngleFit(angleData: np.ndarray, timings: np.ndarray, angleFit: list[RLMResults], intensityData: np.ndarray = None, cmap=mpl.colormaps.get_cmap("perula")):
+def showAngleFit(
+    angleData: list, 
+    timings: list, 
+    angleFit: list, 
+    intensityData: list = None, 
+    cmap=mpl.colormaps.get_cmap("inferno"), 
+    labels: list[str] = None
+):
     """
-    Plots each dataset in angleData with the corresponding robust linear fit against the given timings.
-    Optionally, plots the maximum of an intensity dataset on a secondary y-axis for each angle dataset.
+    Plot multiple angle datasets and their robust linear fits over time.
+
+    This function visualizes a list of angle measurements (as lists or arrays) against their corresponding time points,
+    overlaying each with its robust linear fit. Optionally, a secondary y-axis can display intensity data for each dataset.
+    Each dataset is plotted with a unique color and marker for clarity.
 
     Parameters
     ----------
-    angleData : np.ndarray
-        2D array of angle data, shape (n, t), where n is the number of datasets and t is the number of time points.
-    timings : np.ndarray
-        1D array of timestamps, shape (t,).
-    angleFit : list[RLMResults]
-        List of fitted robust linear model results, one for each dataset.
-    intensityData : np.ndarray, optional
-        2D array of intensity data, shape (n, t), where each row corresponds to the intensity for one angle dataset.
+    angleData : list of lists or 1D arrays
+        Each entry is a sequence of angle values for one dataset.
+    timings : list of lists or 1D arrays
+        Each entry is a sequence of time points corresponding to the angle data.
+    angleFit : list of statsmodels RLMResults
+        Each entry is a robust linear model fit for the corresponding dataset.
+    intensityData : list of lists or 1D arrays, optional
+        Each entry is a sequence of intensity values for one dataset (plotted on a secondary y-axis if provided).
     cmap : matplotlib.colors.Colormap, optional
-        Colormap to use for plotting different datasets.
+        Colormap for distinguishing datasets (default: "inferno").
+    labels : list of str, optional
+        Custom labels for each dataset (default: numbered).
 
     Returns
     -------
     fig : matplotlib.figure.Figure
-        The matplotlib figure object.
+        The matplotlib figure object containing the plot.
     """
-    import matplotlib.pyplot as plt
+    #for case that only 1d arrays are given
+    if not type(angleData) == list:
+        angleData = [angleData]
+    if not type(timings) == list:
+        timings = [timings]
+    if not type(angleFit) == list:
+        angleFit = [angleFit]
+    if not type(intensityData) == list:
+        intensityData = [intensityData]
 
-    n = angleData.shape[0]
+    n = len(angleData)
     if cmap is None:
         cmap = plt.get_cmap('tab10')
     colors = cmap(np.linspace(0, 1, n))
@@ -144,17 +166,20 @@ def showAngleFit(angleData: np.ndarray, timings: np.ndarray, angleFit: list[RLMR
     else:
         ax2 = None
 
+    if labels is None:
+        labels = [str(x) for x in range(1,len(timings)+1)]
+
     for i in range(n):
         marker = markers[i % len(markers)]
         # Plot angle data with dashed line and marker
-        ax1.plot(timings, angleData[i], ls='--', marker=marker, color=colors[i], label=f'Dataset {i+1}')
+        ax1.plot(timings[i], np.unwrap(angleData[i]), ls='--', marker=marker, color=colors[i], label=f'Dataset {labels[i]}')
         # Plot fit with solid line and same marker
         fit_params = angleFit[i].params
-        fit_line = fit_params[0] + fit_params[1] * timings
-        ax1.plot(timings, fit_line, ls='-', marker=marker, color=colors[i], label=f'Fit {i+1}')
+        fit_line = fit_params[0] + fit_params[1] * timings[i]
+        ax1.plot(timings[i], fit_line, ls='-', marker=marker, color=colors[i], label=f'Fit {i+1}')
         # Plot intensity max if provided
         if intensityData is not None:
-            ax2.plot(timings, intensityData[i], ls=':', marker=marker, color=colors[i], label=f'Intensity {i+1}')
+            ax2.plot(timings[i], intensityData[i], ls=':', marker="", color=colors[i], label=f'Intensity {labels[i]}')
 
     ax1.set_xlabel("Time")
     ax1.set_ylabel("Angle")
@@ -173,3 +198,229 @@ def showAngleFit(angleData: np.ndarray, timings: np.ndarray, angleFit: list[RLMR
     plt.tight_layout()
     plt.show()
     return fig
+
+def showOGV(
+        OAM: list, 
+        angleFit: list, 
+        cmap=mpl.colormaps.get_cmap("inferno"), 
+        labels: list[str] = None
+    ):
+    """
+    Plot OGV as a function of OAM.
+
+    Parameters
+    ----------
+    OAM : list
+        Each entry is the OAM from the data.
+    angleFit : list of statsmodels RLMResults
+        Each entry is a robust linear model fit for the corresponding dataset.
+    cmap : matplotlib.colors.Colormap, optional
+        Colormap for distinguishing datasets (default: "inferno").
+
+    Returns
+    -------
+    fig : matplotlib.figure.Figure
+        The matplotlib figure object containing the plot.
+    """
+    #for case that only 1d arrays are given
+    if not type(angleFit) == list:
+        angleFit = [angleFit]
+
+    n = len(OAM)
+    if cmap is None:
+        cmap = plt.get_cmap('tab10')
+    colors = cmap(np.linspace(0, 1, n))
+    fig, ax = plt.subplots()
+    markers = ['o', 's', '^', 'D', 'v', 'P', '*', '<', '>','+', '.']  # extend if needed
+
+    #Theoretical OGV
+    OGV_theory = (2*np.pi*C0/778e-9 - 2*np.pi*C0/806e-9)/9
+
+    for i in range(n):
+        marker = markers[i % len(markers)]
+        # Plot OGV
+        fit_params = angleFit[i].params
+        ax.plot(OAM[i], fit_params[1], marker=marker, color=colors[i], label=f'Experimental OGV {OAM[i]}')
+
+    #Plot Theoretical OGV
+    ax.plot(OAM[0], -OGV_theory, marker="X", color="r", label="Theoretical OGV")
+
+    ax.set_xlabel("OAM")
+    ax.set_ylabel("OGV (rad/s)")
+
+    plt.title("Theoretical and Exerimental OGV")
+    plt.tight_layout()
+    plt.grid(True, "both")
+    plt.legend()
+    plt.show()
+    return fig
+
+def showOGV(
+        OAM: list, 
+        angleFit: list,
+        radius: list, 
+        cmap=mpl.colormaps.get_cmap("inferno"), 
+        labels: list[str] = None
+    ):
+    """
+    Plot LOGV as a function of OAM.
+
+    Parameters
+    ----------
+    OAM : list 
+        Each entry is a sequence of time points corresponding to the angle data.
+    angleFit : list of statsmodels RLMResults
+        Each entry is a robust linear model fit for the corresponding dataset.
+    intensityData : list of lists or 1D arrays, optional
+        Each entry is a sequence of intensity values for one dataset (plotted on a secondary y-axis if provided).
+    cmap : matplotlib.colors.Colormap, optional
+        Colormap for distinguishing datasets (default: "inferno").
+    labels : list of str, optional
+        Custom labels for each dataset (default: numbered).
+
+    Returns
+    -------
+    fig : matplotlib.figure.Figure
+        The matplotlib figure object containing the plot.
+    """
+    #for case that only 1d arrays are given
+    if not type(angleFit) == list:
+        angleFit = [angleFit]
+
+    n = len(OAM)
+    if cmap is None:
+        cmap = plt.get_cmap('tab10')
+    colors = cmap(np.linspace(0, 1, n))
+    fig, ax = plt.subplots()
+    markers = ['o', 's', '^', 'D', 'v', 'P', '*', '<', '>','+', '.']  # extend if needed
+
+    for i in range(n):
+        marker = markers[i % len(markers)]
+        # Plot OGV
+        fit_params = angleFit[i].params
+        ax.plot(OAM[i], fit_params[1], marker=marker, color=colors[i], label=f'Experimental OGV {OAM[i]}')
+
+    #Plot Theoretical OGV
+    ax.plot(OAM[0], -OGV_theory, marker="X", color="r", label="Theoretical OGV")
+
+    ax.set_xlabel("OAM")
+    ax.set_ylabel("OGV (rad/s)")
+
+    plt.title("Theoretical and Exerimental OGV")
+    plt.tight_layout()
+    plt.grid(True, "both")
+    plt.legend()
+    plt.show()
+    return fig
+
+def showOGV(
+        OAM: list, 
+        angleFit: list, 
+        cmap=mpl.colormaps.get_cmap("inferno"), 
+        labels: list[str] = None
+    ):
+    """
+    Plot OGV as a function of OAM.
+
+    Parameters
+    ----------
+    OAM : list
+        Each entry is the OAM from the data.
+    angleFit : list of statsmodels RLMResults
+        Each entry is a robust linear model fit for the corresponding dataset.
+    cmap : matplotlib.colors.Colormap, optional
+        Colormap for distinguishing datasets (default: "inferno").
+
+    Returns
+    -------
+    fig : matplotlib.figure.Figure
+        The matplotlib figure object containing the plot.
+    """
+    #for case that only 1d arrays are given
+    if not type(angleFit) == list:
+        angleFit = [angleFit]
+
+    n = len(OAM)
+    if cmap is None:
+        cmap = plt.get_cmap('tab10')
+    colors = cmap(np.linspace(0, 1, n))
+    fig, ax = plt.subplots()
+    markers = ['o', 's', '^', 'D', 'v', 'P', '*', '<', '>','+', '.']  # extend if needed
+
+    #Theoretical OGV
+    OGV_theory = (2*np.pi*C0/778e-9 - 2*np.pi*C0/806e-9)/9
+
+    for i in range(n):
+        marker = markers[i % len(markers)]
+        # Plot OGV
+        fit_params = angleFit[i].params
+        ax.plot(OAM[i], fit_params[1], marker=marker, color=colors[i], label=f'Experimental OGV {OAM[i]}')
+
+    #Plot Theoretical OGV
+    ax.plot(OAM, -OGV_theory, ls="-", color="r", label="Theoretical OGV")
+
+    ax.set_xlabel("OAM")
+    ax.set_ylabel("OGV (rad/s)")
+
+    plt.title("Theoretical and Experimental OGV")
+    plt.tight_layout()
+    plt.grid(True, "both")
+    plt.legend()
+    plt.show()
+    return fig
+
+def showLOGV(
+        OAM: list, 
+        expLOGV: list,
+        theoryLOGV: list, 
+        cmap=mpl.colormaps.get_cmap("inferno"), 
+        labels: list[str] = None
+    ):
+    """
+    Plot LOGV as a function of OAM.
+
+    Parameters
+    ----------
+    OAM : list 
+        Each entry is a sequence of time points corresponding to the angle data.
+    angleFit : list of statsmodels RLMResults
+        Each entry is a robust linear model fit for the corresponding dataset.
+    intensityData : list of lists or 1D arrays, optional
+        Each entry is a sequence of intensity values for one dataset (plotted on a secondary y-axis if provided).
+    cmap : matplotlib.colors.Colormap, optional
+        Colormap for distinguishing datasets (default: "inferno").
+    labels : list of str, optional
+        Custom labels for each dataset (default: numbered).
+
+    Returns
+    -------
+    fig : matplotlib.figure.Figure
+        The matplotlib figure object containing the plot.
+    """
+    #for case that only 1d arrays are given
+    if not type(angleFit) == list:
+        angleFit = [angleFit]
+
+    n = len(OAM)
+    if cmap is None:
+        cmap = plt.get_cmap('tab10')
+    colors = cmap(np.linspace(0, 1, n))
+    fig, ax = plt.subplots()
+    markers = ['o', 's', '^', 'D', 'v', 'P', '*', '<', '>','+', '.']  # extend if needed
+
+    for i in range(n):
+        marker = markers[i % len(markers)]
+        # Plot LOGV
+        fit_params = angleFit[i].params
+        ax.plot(OAM[i], expLOGV[i], marker=marker, color=colors[i], label=f'Experimental LOGV {OAM[i]}')
+        ax.plot(OAM[i], theoryLOGV[i], marker="X", color=colors[i], label=f'Theoretical LOGV {OAM[i]}')
+
+    ax.set_xlabel("OAM")
+    ax.set_ylabel("LOGV (/c)")
+
+    plt.title("Theoretical and Experimental LOGV")
+    plt.tight_layout()
+    plt.grid(True, "both")
+    plt.legend()
+    plt.show()
+    return fig   

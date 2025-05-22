@@ -771,75 +771,75 @@ def getCurrentAngleLS(lsSLice:np.ndarray, threshhold, center:tuple[int,int], mas
         plt.show()
     return (getAngle(maxPoint), getAngle(weightedSquared), getAngle(massPoint))
 
-# def getOGV(lightspringData:np.ndarray, times:np.ndarray, estimatedCenter:tuple[int,int], maskRadius:int,
-#            threshhold=0.8, sigma_Fit=1, fromIsosurface=False, isoLevel=.5, isoTolerance=10,
-#            showStatistics=False, showFit=False, angleFittingAlgo=1):
-#     """
-#     Calculates the OGV (Optical Gauge Velocity) and radius for each slice of the `lightspringData`, as well as the
-#     average OGV and average radius.
+def getOGV(lightspringData:np.ndarray, times:np.ndarray, estimatedCenter:tuple[int,int], maskRadius:int,
+           threshhold=0.8, sigma_Fit=1, fromIsosurface=False, isoLevel=.5, isoTolerance=10,
+           showStatistics=False, showFit=False, angleFittingAlgo=1):
+    """
+    Calculates the OGV (Optical Gauge Velocity) and radius for each slice of the `lightspringData`, as well as the
+    average OGV and average radius.
 
-#     Parameters
-#     ----------
-#     lightspringData : np.ndarray
-#         3D array representing the light spring data with shape (t, x, x).
-#     times : np.ndarray
-#         1D array of timestamps for each time slice.
-#     estimatedCenter : tuple[int, int]
-#         Coordinates (x, y) of the estimated center.
-#     maskRadius : int
-#         Radius of the circular mask.
-#     threshhold : float, optional (default=0.8)
-#         Threshold for data filtering.
-#     sigma_Fit : float, optional (default=1.0)
-#         Sigma range for radius fitting.
-#     fromIsosurface : bool, optional (default=False)
-#         If True, use isosurface mask for angle calculation.
-#     isoLevel : float, optional (default=0.5)
-#         Relative isosurface level.
-#     isoTolerance : float, optional (default=10)
-#         Tolerance for isosurface level.
-#     showStatistics : bool, optional (default=False)
-#         If True, plot fitting statistics.
-#     showFit : bool, optional (default=False)
-#         If True, plot fit for each slice.
-#     angleFittingAlgo : int, optional (default=1)
-#         Algorithm for angle calculation (0=max, 1=squared weighted, 2=center of mass).
+    Parameters
+    ----------
+    lightspringData : np.ndarray
+        3D array representing the light spring data with shape (t, x, x).
+    times : np.ndarray
+        1D array of timestamps for each time slice.
+    estimatedCenter : tuple[int, int]
+        Coordinates (x, y) of the estimated center.
+    maskRadius : int
+        Radius of the circular mask.
+    threshhold : float, optional (default=0.8)
+        Threshold for data filtering.
+    sigma_Fit : float, optional (default=1.0)
+        Sigma range for radius fitting.
+    fromIsosurface : bool, optional (default=False)
+        If True, use isosurface mask for angle calculation.
+    isoLevel : float, optional (default=0.5)
+        Relative isosurface level.
+    isoTolerance : float, optional (default=10)
+        Tolerance for isosurface level.
+    showStatistics : bool, optional (default=False)
+        If True, plot fitting statistics.
+    showFit : bool, optional (default=False)
+        If True, plot fit for each slice.
+    angleFittingAlgo : int, optional (default=1)
+        Algorithm for angle calculation (0=max, 1=squared weighted, 2=center of mass).
 
-#     Returns
-#     -------
-#     averageOGV : float
-#         Average optical gauge velocity [rad/m].
-#     averageRadius : float
-#         Average radius [m].
-#     OGV_array : np.ndarray
-#         OGV for each slice [rad/m].
-#     radius_array : np.ndarray
-#         Radius for each slice [m].
-#     angle_array : np.ndarray
-#         Angular position for each slice [rad].
-#     """
-#     data = np.copy(lightspringData)
-#     if fromIsosurface:
-#         mask = makeIsosurfaceMask(lightspringData, isoLevel, isoTolerance)
-#         data[~mask] = 0
-#         angleFittingAlgo = 2 #center of mass
-#         m = np.any(mask,axis= (1,2))
-#     meassured = np.zeros((data.shape[0],2)) # axis1: 0: r, 1: angle
-#     for i in range(meassured.shape[0]):
-#         # if fromIsosurface and not m[i]:
-#         #     meassured[i,0]=np.nan
-#         #     meassured[i,1]=np.nan
-#         #     continue
-#         r, center = findRadius(data[i,:,:], estimatedCenter, maskRadius, threshhold, sigma_Fit, showStatistics)
-#         angle = getCurrentAngleLS(data[i,:,:], threshhold, center, r*0.65, showStatistics, showFit)[angleFittingAlgo]
-#         r = calculateRadius(r)
-#         meassured[i,0]=r
-#         meassured[i,1]=angle
-#     #put fit here instead of gradient
-#     ogv = np.gradient(meassured[:,1], times)
-#     avgOGV = np.nanmean(ogv)
-#     avgRadius = np.nanmean(meassured[:,0])
-#     return avgOGV, avgRadius, ogv, meassured[:,0], meassured[:,1]
+    Returns
+    -------
+    averageOGV : float
+        Average optical gauge velocity [rad/m].
+    averageRadius : float
+        Average radius [m].
+    OGV_array : np.ndarray
+        OGV for each slice [rad/m].
+    radius_array : np.ndarray
+        Radius for each slice [m].
+    angle_array : np.ndarray
+        Angular position for each slice [rad].
+    """
+    data = np.copy(lightspringData)
+    if fromIsosurface:
+        mask = makeIsosurfaceMask(lightspringData, isoLevel, isoTolerance)
+        data[~mask] = 0
+        angleFittingAlgo = 2 #center of mass
+        m = np.any(mask,axis= (1,2))
+    meassured = np.zeros((data.shape[0],2)) # axis1: 0: r, 1: angle
+    for i in range(meassured.shape[0]):
+        # if fromIsosurface and not m[i]:
+        #     meassured[i,0]=np.nan
+        #     meassured[i,1]=np.nan
+        #     continue
+        r, center = findRadius(data[i,:,:], estimatedCenter, maskRadius, threshhold, sigma_Fit, showStatistics)
+        angle = getCurrentAngleLS(data[i,:,:], threshhold, center, r*0.65, showStatistics, showFit)[angleFittingAlgo]
+        r = calculateRadius(r)
+        meassured[i,0]=r
+        meassured[i,1]=angle
+    #put fit here instead of gradient
+    ogv = np.gradient(meassured[:,1], times)
+    avgOGV = np.nanmean(ogv)
+    avgRadius = np.nanmean(meassured[:,0])
+    return avgOGV, avgRadius, ogv, meassured[:,0], meassured[:,1]
 
 def calculateLOGV_theory(radius, dOmega=2*np.pi*C0/778e-9 - 2*np.pi*C0/806e-9, dl=7):
     """
@@ -1033,13 +1033,26 @@ def getRadialIntensity(data: np.ndarray, center: tuple[int, int], cropRadius: in
         mask = np.sqrt((x - center[0]) ** 2 + (y - center[1]) ** 2) <= cropRadius
         radial_profile = data[i].copy()
         radial_profile[~mask] = 0
-        maxI = np.max(radial_profile[i,:,:])
+        maxI = np.max(radial_profile)
         intensityMax[i] = maxI
     return intensityMax
 
-def fitAnglesAndIntensity(data: np.ndarray, times: np.ndarray, center: tuple[int, int], cropRadius: int, threshhold: float = 0.8) -> tuple[list, np.ndarray]:
+def fitAnglesAndIntensity(
+    data: np.ndarray,
+    times: np.ndarray,
+    center: tuple[int, int],
+    cropRadius: int,
+    threshhold: float = 0.8,
+    crop: bool = True
+) -> tuple[list, np.ndarray, np.ndarray]:
     """
-    For each timeslice in a 3D data array, fits the angle using fitAngleData and gets the intensity profile with getRadialIntensity.
+    Calculates the angle and intensity for each time slice in a 3D data array, and fits the angle data to a robust linear model.
+
+    For each slice in the input data:
+      - Computes the angle using getCurrentAngleLS (using squared weighting).
+      - Calculates the maximum radial intensity using getRadialIntensity.
+      - Optionally filters out slices with intensity below half the maximum.
+      - Fits the resulting angle vs. time data using a robust linear model (statsmodels RLM).
 
     Parameters
     ----------
@@ -1048,18 +1061,24 @@ def fitAnglesAndIntensity(data: np.ndarray, times: np.ndarray, center: tuple[int
     times : np.ndarray
         1D array of timestamps, shape (n,).
     center : tuple[int, int]
-        Center coordinates (x, y) for intensity profile.
+        Center coordinates (x, y) for angle and intensity calculation.
     cropRadius : int
-        Mask radius in pixels for intensity profile.
-    threshhold : float, optional (default=0.8)
-        Threshold for angle fitting (passed to getCurrentAngleLS if used).
+        Mask radius in pixels for angle and intensity calculation.
+    threshhold : float, optional
+        Threshold for angle calculation (passed to getCurrentAngleLS).
+    crop : bool, optional
+        If True, only slices with intensity above half the maximum are used for fitting.
 
     Returns
     -------
-    angleFit : 
-        List of statsmodels robust linear model fit results for each slice.
+    angleFit : statsmodels.robust.robust_linear_model.RLMResults
+        Robust linear model fit result for angle vs. time.
     intensities : np.ndarray
-        2D array of intensity profiles, shape (n, y), one per slice.
+        1D array of maximum intensities for each slice, shape (n,).
+    angles : np.ndarray
+        1D array of calculated angles (squared weighted) for each slice, shape (n,).
+    times (optional) : np.ndarray
+        Returned only if cropping is enabled; filtered timestamps.
     """
     n = data.shape[0]
     angles = np.nan*np.zeros(n)
@@ -1068,9 +1087,37 @@ def fitAnglesAndIntensity(data: np.ndarray, times: np.ndarray, center: tuple[int
         angles[i] = getCurrentAngleLS(data[i], threshhold, center, cropRadius)[1]
     # Get intensity profile for each slice
     intensities = getRadialIntensity(data, center, cropRadius, showPlot=False)
-
     angles = np.array(angles)
+    if crop:
+        angles, times, intensities = cropByIntensity(angles, times, intensities) 
     # Fit angles vs times
-    angleFit = fitAngleData(angles, times)
+    angleFit = fitAngleData(angles, times)[2]
+    if crop:
+        return angleFit, intensities, angles, times
     return angleFit, intensities, angles
 
+def cropByIntensity(data: np.ndarray, times: np.ndarray, intensity: np.ndarray) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """
+    Selects and returns only those slices of the data, timestamps, and intensity values where the intensity exceeds half of the maximum intensity.
+
+    Parameters
+    ----------
+    data : np.ndarray
+        3D array of shape (n, x, y), where n is the number of slices.
+    times : np.ndarray
+        1D array of timestamps, shape (n,).
+    intensity : np.ndarray
+        1D array of intensity values, shape (n,).
+
+    Returns
+    -------
+    cropped_data : np.ndarray
+        Data slices where intensity > 0.5 * max(intensity).
+    cropped_times : np.ndarray
+        Corresponding timestamps for the selected data.
+    cropped_intensity : np.ndarray
+        Corresponding intensity values for the selected data.
+    """
+    maxI = np.max(intensity)
+    index = np.where(intensity > maxI*0.5)
+    return data[index], times[index], intensity[index]
