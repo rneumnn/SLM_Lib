@@ -5,7 +5,7 @@ import plotly.graph_objects as go
 from statsmodels.robust.robust_linear_model import RLMResults
 
 C0 = 299792458  #m/s
-
+DEFAULT_CMAP = mpl.colormaps.get_cmap("jet")
 """
     Package to visualize reconstructed electric fields
     """
@@ -114,7 +114,7 @@ def showAngleFit(
     timings: list, 
     angleFit: list, 
     intensityData: list = None, 
-    cmap=mpl.colormaps.get_cmap("inferno"), 
+    cmap=DEFAULT_CMAP, 
     labels: list[str] = None
 ):
     """
@@ -199,10 +199,100 @@ def showAngleFit(
     plt.show()
     return fig
 
+def showAngleFitSpace(
+    angleData: list, 
+    positions: list, 
+    angleFit: list, 
+    intensityData: list = None, 
+    cmap=DEFAULT_CMAP, 
+    labels: list[str] = None
+):
+    """
+    Plot multiple angle datasets and their robust linear fits over time.
+
+    This function visualizes a list of angle measurements (as lists or arrays) against their corresponding time points,
+    overlaying each with its robust linear fit. Optionally, a secondary y-axis can display intensity data for each dataset.
+    Each dataset is plotted with a unique color and marker for clarity.
+
+    Parameters
+    ----------
+    angleData : list of lists or 1D arrays
+        Each entry is a sequence of angle values for one dataset.
+    timings : list of lists or 1D arrays
+        Each entry is a sequence of time points corresponding to the angle data.
+    angleFit : list of statsmodels RLMResults
+        Each entry is a robust linear model fit for the corresponding dataset.
+    intensityData : list of lists or 1D arrays, optional
+        Each entry is a sequence of intensity values for one dataset (plotted on a secondary y-axis if provided).
+    cmap : matplotlib.colors.Colormap, optional
+        Colormap for distinguishing datasets (default: "inferno").
+    labels : list of str, optional
+        Custom labels for each dataset (default: numbered).
+
+    Returns
+    -------
+    fig : matplotlib.figure.Figure
+        The matplotlib figure object containing the plot.
+    """
+    #for case that only 1d arrays are given
+    if not type(angleData) == list:
+        angleData = [angleData]
+    if not type(positions) == list:
+        positions = [positions]
+    if not type(angleFit) == list:
+        angleFit = [angleFit]
+    if not type(intensityData) == list:
+        intensityData = [intensityData]
+
+    n = len(angleData)
+    if cmap is None:
+        cmap = plt.get_cmap('tab10')
+    colors = cmap(np.linspace(0, 1, n))
+    fig, ax1 = plt.subplots()
+    markers = ['o', 's', '^', 'D', 'v', 'P', '*', 'X', '<', '>','+', '.']  # extend if needed
+
+    if intensityData is not None:
+        ax2 = ax1.twinx()
+    else:
+        ax2 = None
+
+    if labels is None:
+        labels = [str(x) for x in range(1,len(positions)+1)]
+
+    for i in range(n):
+        marker = markers[i % len(markers)]
+        # Plot angle data with dashed line and marker
+        ax1.plot(positions[i], np.unwrap(angleData[i]), ls='--', marker=marker, color=colors[i], label=f'Dataset {labels[i]}')
+        # Plot fit with solid line and same marker
+        fit_params = angleFit[i].params
+        fit_line = fit_params[0] + fit_params[1] * positions[i]
+        ax1.plot(positions[i], fit_line, ls='-', marker=marker, color=colors[i], label=f'Fit {i+1}')
+        # Plot intensity max if provided
+        if intensityData is not None:
+            ax2.plot(positions[i], intensityData[i], ls=':', marker="", color=colors[i], label=f'Intensity {labels[i]}')
+
+    ax1.set_xlabel("CCD Position / mm")
+    ax1.set_ylabel("Angle / rad")
+    if ax2:
+        ax2.set_ylabel("Intensity (max)")
+
+    # Combine legends from both axes if needed
+    handles1, labels1 = ax1.get_legend_handles_labels()
+    if ax2:
+        handles2, labels2 = ax2.get_legend_handles_labels()
+        ax2.legend(handles1 + handles2, labels1 + labels2, loc='best')
+    else:
+        ax1.legend(loc='best')
+
+    plt.title("Angle Data with Robust Linear Fits and Intensity Max")
+    plt.tight_layout()
+    plt.show()
+    return fig
+
 def showOGV(
         OAM: list, 
         angleFit: list, 
-        cmap=mpl.colormaps.get_cmap("inferno"), 
+        cmap=DEFAULT_CMAP, 
         labels: list[str] = None
     ):
     """
@@ -259,7 +349,7 @@ def showOGV(
         OAM: list, 
         angleFit: list,
         radius: list, 
-        cmap=mpl.colormaps.get_cmap("inferno"), 
+        cmap=DEFAULT_CMAP, 
         labels: list[str] = None
     ):
     """
@@ -316,7 +406,8 @@ def showOGV(
 def showOGV(
         OAM: list, 
         angleFit: list, 
-        cmap=mpl.colormaps.get_cmap("inferno"), 
+        errors: list = None,
+        cmap=DEFAULT_CMAP, 
         labels: list[str] = None
     ):
     """
@@ -336,7 +427,7 @@ def showOGV(
     fig : matplotlib.figure.Figure
         The matplotlib figure object containing the plot.
     """
-    #for case that only 1d arrays are given
+    #for case that only one value is given
     if not type(angleFit) == list:
         angleFit = [angleFit]
 
@@ -354,10 +445,16 @@ def showOGV(
         marker = markers[i % len(markers)]
         # Plot OGV
         fit_params = angleFit[i].params
-        ax.plot(OAM[i], fit_params[1], marker=marker, color=colors[i], label=f'Experimental OGV {OAM[i]}')
+        ax.errorbar(OAM[i], np.abs(fit_params[1]),
+                    yerr=errors[i] if errors is not None else None,
+                    capsize=2,
+                    marker=marker, color=colors[i], label=f'Experimental OGV {OAM[i]}')
+        # Plot errors
+        
+        
 
     #Plot Theoretical OGV
-    ax.axhline(-OGV_theory, ls="--", color="grey", label="Theoretical OGV")
+    ax.axhline(OGV_theory, ls="--", color="grey", label="Theoretical OGV")
 
     ax.set_xlabel("OAM")
     ax.set_ylabel("OGV (rad/s)")
@@ -372,9 +469,12 @@ def showOGV(
 def showLOGV(
         OAM: list, 
         expLOGV: list,
-        theoryLOGV: list, 
-        cmap=mpl.colormaps.get_cmap("inferno"), 
-        labels: list[str] = None
+        theoryLOGV: list,
+        errorsExp: list = None,
+        errorsTheory: list = None,
+        cmap = DEFAULT_CMAP, 
+        labels: list[str] = None,
+        plotC:bool = True
     ):
     """
     Plot LOGV as a function of OAM.
@@ -398,8 +498,10 @@ def showLOGV(
         The matplotlib figure object containing the plot.
     """
     #for case that only 1d arrays are given
-    if not type(angleFit) == list:
-        angleFit = [angleFit]
+    if (not type(expLOGV) == list) and (not type(expLOGV) == np.ndarray):
+        expLOGV = [expLOGV]
+    if (not type(theoryLOGV) == list) and (not type(theoryLOGV) == np.ndarray):
+        theoryLOGV = [theoryLOGV]
 
     n = len(OAM)
     if cmap is None:
@@ -407,14 +509,27 @@ def showLOGV(
     colors = cmap(np.linspace(0, 1, n))
     fig, ax = plt.subplots()
     markers = ['o', 's', '^', 'D', 'v', 'P', '*', '<', '>','+', '.']  # extend if needed
-
+    if errorsExp is None:
+        errorsExp = np.zeros((len(OAM)))
+    if errorsTheory is None:
+        errorsTheory = np.zeros((len(OAM)))
     for i in range(n):
         marker = markers[i % len(markers)]
         # Plot LOGV
-        fit_params = angleFit[i].params
-        ax.plot(OAM[i], expLOGV[i], marker=marker, color=colors[i], label=f'Experimental LOGV {OAM[i]}')
-        ax.plot(OAM[i], theoryLOGV[i], marker="X", color=colors[i], label=f'Theoretical LOGV {OAM[i]}')
+        ax.errorbar(
+            OAM[i], expLOGV[i]/C0, 
+            yerr=errorsExp[i]/C0,
+            capsize=2,
+            marker=marker, color=colors[i], label=f'Experimental LOGV {OAM[i]}'
+            )
+        ax.errorbar(OAM[i], theoryLOGV[i]/C0,
+                    yerr=errorsTheory[i]/C0,
+                    capsize=2,
+                    marker="X", color=colors[i], label=f'Theoretical LOGV {OAM[i]}')
 
+    if plotC:
+        ax.axhline(1, ls="--", color="grey", label="C")
+        
     ax.set_xlabel("OAM")
     ax.set_ylabel("LOGV (/c)")
 

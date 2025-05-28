@@ -2,6 +2,8 @@
 Package for processing spacetime-beams related data
 """
 import numpy as np
+import numpy.typing as npt
+from typing import Annotated, Literal, TypeVar, Union
 import matplotlib.pyplot as plt
 import matplotlib as mpl
 from pathlib import Path
@@ -9,9 +11,213 @@ import os
 import re
 from .Visualizing import showImage
 import statsmodels.api as sm
+from statsmodels.robust.robust_linear_model import RLMResults
+from dataclasses import dataclass
+import time
 
 MOTOR_STEP_SIZE = 50e-9 #m
 C0 = 299792458  #m/s
+DType = TypeVar("DType", bound=np.generic)
+#types
+DataArray = Annotated[npt.NDArray[DType],Literal["t", "X", "Y"]]
+TimeShapedArray = Annotated[npt.NDArray[DType], Literal["t"]]
+
+#structures
+@dataclass
+class OGVMeasurement:
+    # structure to store OGV Meassurement data
+    OGV: float
+    OGVError: float
+    LOGV: float 
+    LOGVError: float
+    avgRadius: float
+    avgRadiusError: float
+    radii: TimeShapedArray[np.float64]
+    radiiError: TimeShapedArray[np.float64]
+    anglesMeassured: TimeShapedArray[np.float64]
+    intensities: TimeShapedArray[np.float64]
+    times: TimeShapedArray[np.float64]
+    angleFit: RLMResults
+    angles: TimeShapedArray[np.float64]
+
+@dataclass
+class STPulseData:
+    data: DataArray[np.float64]
+    times: TimeShapedArray[np.float64]
+    motorPos: TimeShapedArray[np.float64]
+
+    def safeToFile(self, path:Union[str, Path]) -> None:
+        """
+        Saves the spacetime pulse data to a file.
+
+        Parameters
+        ----------
+        path : str | Path
+            The path where the data should be saved.
+        """
+        if isinstance(path, str):
+            path = Path(path)
+        if not path.suffix == ".npz":
+            path = path.with_suffix(".npz")
+        if not ParameterKeys.N_SLICES in path.stem:
+            path.with_name(path.stem+f"{ParameterKeys.N_SLICES}={self.data.shape[0]}") # add number of slices to the filename
+        if not os.path.isdir(path.parent):
+            os.makedirs(path.parent)
+        np.savez_compressed(path, data=self.data, times=self.times, motorPos=self.motorPos)
+    
+    def loadFromFile(path:Union[str, Path]) -> "STPulseData":
+        """
+        Loads spacetime pulse data from a file.
+
+        Parameters
+        ----------
+        path : str | Path
+            The path to the file containing the spacetime pulse data.
+
+        Returns
+        -------
+        STPulseData
+            An instance of STPulseData containing the loaded data.
+        """
+        if isinstance(path, str):
+            path = Path(path)
+        if not path.suffix == ".npz":
+            path = path.with_suffix(".npz")
+        with np.load(path) as data:
+            return STPulseData(data=data["data"], times=data["times"], motorPos=data["motorPos"])
+    
+@dataclass
+class CircleFit:
+    center: tuple[float, float]
+    radius: float
+    error: float
+
+# ParameterKeys
+class ParameterKeys:
+    TOPOLOGICALCHARGE = r"tc"
+    DELTA_L = r"dl"
+    N_FREQUENCYBINS = r"n"
+    SLM_POSITION = r"SLM"
+    TOTAL_DL = r"totaldl"
+    CAM_POSITION = r"camPos"
+    MOTOR_POSITION = r"motorPos"
+    N_SLICES = r"nSlices"
+
+    def listKeys():
+        """
+        Returns a list of all keys in the ParameterKeys class.
+        
+        Returns
+        -------
+        list
+            A list of strings representing the keys.
+        """
+        return [ParameterKeys.TOPOLOGICALCHARGE,
+                ParameterKeys.DELTA_L,
+                ParameterKeys.N_FREQUENCYBINS,
+                ParameterKeys.SLM_POSITION,
+                ParameterKeys.TOTAL_DL,
+                ParameterKeys.CAM_POSITION,
+                ParameterKeys.MOTOR_POSITION,
+                ParameterKeys.N_SLICES]
+    
+    def extractParameter(parameter, filename) -> int:
+        """
+        Extracts the parameter name from a given filename.
+        """
+
+        pattern = parameter + r"\s*(?:=\s*)?(-?\d+)"
+
+        match = re.search(pattern, filename)
+        value = None
+        if match:
+            value = int(match.group(1))
+        return value
+    
+    def getAllParams(filename) -> dict[str, int]:
+        """
+        Extracts all parameters from a given filename.
+
+        Parameters
+        ----------
+        filename : str
+            The filename from which to extract parameters.
+
+        Returns
+        -------
+        dict[str, float]
+            A dictionary containing the extracted parameters.
+        """
+        params = {}
+        for key in ParameterKeys.listKeys():
+            value = ParameterKeys.extractParameter(key, filename)
+            if value is not None:
+                params[key] = value
+        return params
+    
+    def dictToName(params:dict[str, int]) -> str:
+        """
+        Converts a dictionary of parameters to a string representation.
+
+        Parameters
+        ----------
+        params : dict[str, int]
+            A dictionary containing parameter names and their values.
+
+        Returns
+        -------
+        str
+            A string representation of the parameters.
+        """
+        return "_".join([f"{key}={value}" for key, value in params.items() if value is not None])
+
+def _searchForSTPulseData(folder:Path) -> Path:
+    """
+    Searches for spacetime pulse data in a folder.
+
+    Parameters
+    ----------
+    folder : Path
+        The folder to search in.
+    Raises
+    ------
+    FileNotFoundError
+        If no spacetime pulse data is found in the folder.
+    FileExistsError
+        If multiple spacetime pulse data files are found in the folder.
+    Returns
+    -------
+    filepath : Path
+        The spacetime pulse data found in the folder.
+    """
+    files = os.listdir(folder)
+    files = [f for f in files if f[-4:] == ".npz"]
+    if len(files) == 0:
+        raise FileNotFoundError(f"No spacetime pulse data found in {folder}")
+    elif len(files) > 1:
+        raise FileExistsError(f"Multiple spacetime pulse data files found in {folder}: {files}")
+    filePath = folder/Path(files[0])
+    return filePath
+
+def _cropSTPulseData(data:STPulseData, mask) -> STPulseData:
+    """
+    Crops the spacetime pulse data using a mask.
+
+    Parameters
+    ----------
+    data : STPulseData
+        The spacetime pulse data to crop.
+    mask : np.ndarray
+        A boolean mask to apply to the data.
+
+    Returns
+    -------
+    STPulseData
+        The cropped spacetime pulse data.
+    """
+    new = [field[mask] if field is not None else None for field in (data.data, data.times, data.motorPos)]
+    return STPulseData(*new)
+
 def _checkDataType(arg):
     if isinstance(arg, np.ndarray):
         return arg 
@@ -196,7 +402,7 @@ def reconstructData(file,
         plt.colorbar()
         plt.title( "Reconstructed Phase" )
         plt.sca( axs[5] )
-        plt.imshow( np.angle(data_proc).T, cmap="seismic", origin="lower" )
+        plt.imshow( np.angle(data_proc).T*np.sqrt(np.abs(data_proc)), cmap="seismic", origin="lower" )
         plt.colorbar()
         plt.title( "Reconstructed Field" )
         plt.show(block=False)
@@ -384,7 +590,7 @@ def manualFFT(E_omega:np.ndarray, omegas:np.ndarray, t, applyPhaselock = False):
         res = res + E_omega[:,:,i] * np.exp(1j * omegas[i] * t)
     return res
 
-def getMotorPos(name):
+def getMotorPos(name)->float|None:
     """
     Extracts the motor position from a filename.
 
@@ -405,7 +611,7 @@ def getMotorPos(name):
         motor_pos = motor_pos * MOTOR_STEP_SIZE
     return motor_pos
 
-def calculateTiming(motorPos):
+def calculateTiming(motorPos:float|np.ndarray)->float|np.ndarray:
     """
     Calculates the timing from the motor position.
 
@@ -421,7 +627,7 @@ def calculateTiming(motorPos):
     """
     return motorPos/C0*2
 
-def normalizeTimestamps(times:np.ndarray):
+def normalizeTimestamps(times:np.ndarray)-> np.ndarray:
     """
     Normalizes timestamps so that the minimum value is zero.
 
@@ -477,72 +683,93 @@ def reconstructFromFolder(folderPath:Path, cx, cy, A, B, thickness, angle,
     """
     
     files = os.listdir(folderPath)
-    files = [f for f in files if f[-4:] == ".npy"]
-    fileNames = [f[:-4] for f in files]
-    minPos = max(getMotorPos(x) for x in files) #max() because its going further in -x direcion
-    rawData, times = makeVolumeArray(folderPath)
+    fileNames = [f[:-4] for f in files if f[-4:] == ".npy"]
+    try:
+        p = _searchForSTPulseData(folderPath)
+    except (FileNotFoundError, FileExistsError):
+        stTyped = False
+    else:
+        stTyped = True
+    data = makeVolumeArray(folderPath)
+
     if removeWrongExposure:
-        rawData, outliers = removeDoubleLitted(rawData, significance, plot_exp_hist)
-        fileNames = np.asarray(fileNames)[outliers]
-        files = np.asarray(files)[outliers]
-    data = None
-    for i, file in enumerate(fileNames):
+        data, outliers = removeDoubleLitted(data, significance, plot_exp_hist)
+        if not stTyped:
+            fileNames = np.asarray(fileNames)[outliers]
+        else:
+            fileNames = [f"{p.stem}_{str(n+1)}" for n in range(len(data.data))]
+
+    dataNew = None
+    savePath = folderPath/Path("reconstructionData")
+    for i, slice in enumerate(data.data):
+        file = fileNames[i]
         print(file)
         if shift is None:
             shift_i = (0,0)
         else:
             shift_i = (shift[0][i],shift[1][i])
-        rec = reconstructData(rawData[i,:,:],
+        rec = reconstructData(data.data[i,:,:],
                             cx, cy, A, B, thickness, angle,
                             crop_pos, plot_all=plot_all,
                     plot_reconstruction = plot_rec,fft_crop_radius=fft_crop_radius,crop_shift=shift_i,
                     subtract_ref = subtract_ref)
-        savePath = folderPath/Path("reconstructionData")
+        if i == 0:
+                dataNew = np.zeros(shape=(len(fileNames),*rec.shape), dtype=complex)
+        dataNew[i,:,:] = rec
         if not os.path.isdir(savePath):
             os.makedirs(savePath)
         if not phaselock:
-            np.save(savePath/Path(file+"_reconstruction_complex"),rec)
-            np.savetxt(savePath/Path(f"{file}_reconstruction_abs.csv"),np.abs(rec), delimiter=";")
-            np.savetxt(savePath/Path(f"{file}_reconstruction_angle.csv"),np.angle(rec), delimiter=";")
+            np.savetxt(savePath/Path(f"{file}_{data.motorPos[i]}_reconstruction_abs.csv"),np.abs(rec), delimiter=";")
+            #np.savetxt(savePath/Path(f"{file}_reconstruction_angle.csv"),np.angle(rec), delimiter=";")
         else:
             if i == 0:
-                data = np.zeros(shape=(*rec.shape,len(files)), dtype=complex)
-            data[:,:,i] = rec
-        i = i +1
+                dataNew = np.zeros(shape=(len(fileNames),*rec.shape), dtype=complex)
+            dataNew[i,:,:] = rec
+        i = i + 1
     if not phaselock:
+        STPulseData(dataNew, data.times, data.motorPos).safeToFile(savePath/f"{p.stem}_reconstruction_complex")
         return
-    data = phaselockField(data)
+    dataNew = phaselockField(dataNew)
     if not os.path.isdir(savePath/Path("phaselocked")):
         os.makedirs(savePath/Path("phaselocked"))
     for j, fileName in enumerate(fileNames):
-        rec = data[:,:,j]
-        np.save(savePath/Path("phaselocked")/Path(fileName+"_reconstruction_phaselocked_complex"),rec)
-        np.savetxt(savePath/Path("phaselocked")/Path(f"{fileName}_reconstruction_phaselocked_abs.csv"),np.abs(rec), delimiter=";")
-        np.savetxt(savePath/Path("phaselocked")/Path(f"{fileName}_reconstruction_phaselocked_angle.csv"),np.angle(rec), delimiter=";")
+        rec = dataNew[:,:,j]
+        np.savetxt(savePath/Path("phaselocked")/Path(f"{fileName}_{data.motorPos[j]}_reconstruction_phaselocked_abs.csv"),np.abs(rec), delimiter=";")
+        #np.savetxt(savePath/Path("phaselocked")/Path(f"{fileName}_reconstruction_phaselocked_angle.csv"),np.angle(rec), delimiter=";")
+    STPulseData(data=dataNew, times=data.times, motorPos=data.motorPos).safeToFile(savePath/Path("phaselocked")/Path("STPulseData_reconstruction_phaselocked_complex"))
 
-def fitCircle(points:np.ndarray, cArray:np.ndarray, sigmaFit=1, show_statistics=False) -> tuple[tuple[int, int], float]:
+def fitCircle(
+        points:np.ndarray, 
+        centerArray:np.ndarray, 
+        sigmaFit=1, show_statistics=False
+) -> CircleFit:
     """
-    Fits a circle to circularly distributed data points and returns the center and radius.
+    Fits a circle to a set of 2D points and estimates the center and radius.
+
+    The function:
+      - Uses the maximum of the provided centerArray as the initial center estimate.
+      - Computes distances from all points to the estimated center.
+      - Filters out outlier points based on the specified sigma range.
+      - Calculates the mean and standard deviation of the filtered distances as the radius and its error.
+      - Optionally displays fitting statistics and visualizations.
 
     Parameters
     ----------
     points : np.ndarray
-        Data points of shape (2, n).
-    cArray : np.ndarray
-        Filtered data array, where only points considered for the fit have values > 0, shape (x, y).
+        2D array of shape (2, n) containing the (x, y) coordinates of the points to fit.
+    centerArray : np.ndarray
+        2D array representing the intensity or likelihood map for the center; the maximum is used as the initial center.
     sigmaFit : float, optional (default=1)
-        Range of data points considered for the fit in sigma of the distance distribution.
+        Number of standard deviations for filtering outlier points in the fit.
     show_statistics : bool, optional (default=False)
         If True, plot the circle fit and histograms.
 
     Returns
     -------
-    estimated_center : tuple[int, int]
-        Estimated center coordinates (x, y).
-    estimated_radius : float
-        Estimated radius.
+    circleFit : CircleFit
+        CircleFit object containing the estimated center (x, y), radius, and fit error.
     """
-    estimated_center_i  = np.asarray(np.flip(np.unravel_index(np.argmax(cArray),cArray.shape)))
+    estimated_center_i  = np.asarray(np.flip(np.unravel_index(np.argmax(centerArray),centerArray.shape)))
     # print(f"Center: {estimated_center_i}")
     #fit radius
     distances = np.linalg.norm(points - estimated_center_i.reshape((2,1)), axis=0)
@@ -555,7 +782,7 @@ def fitCircle(points:np.ndarray, cArray:np.ndarray, sigmaFit=1, show_statistics=
         plt.hist([distances,distances_noOL],bins)
         plt.title("histogram distances")
         plt.show()
-    estimated_radius_i = np.nanmean(distances_noOL)
+    estimated_radius_i, error = np.nanmean(distances_noOL), np.nanstd(distances_noOL)
 
     print(f"Estimated Initial Center: {estimated_center_i}")
     print(f"Estimated Initial Radius: {estimated_radius_i}")
@@ -607,87 +834,106 @@ def fitCircle(points:np.ndarray, cArray:np.ndarray, sigmaFit=1, show_statistics=
         plt.show
     #rec(points, estimated_center_i, estimated_radius_i)
     estimated_center, estimated_radius = estimated_center_i, estimated_radius_i
-    return estimated_center, estimated_radius
+    return CircleFit(estimated_center, estimated_radius, error)
 
-def findRadius(img: np.ndarray, centerXY: tuple[int, int], filterR_px: int = 30, threshhold: float = 0.8, sigma_Fit: float = 1, showStatistics: bool = False):
+def findRadius(
+        img: np.ndarray, 
+        centerXY: tuple[int, int], 
+        filterR_px: int = 30, 
+        threshhold: float = 0.8, 
+        sigma_Fit: float = 1, 
+        showStatistics: bool = False
+) -> CircleFit:
     """
-    Finds the central radius of the lightspring from a CCD image.
+    Estimates the radius and center of a circular feature (e.g., a lightspring) in a 2D image.
+
+    The function:
+      - Masks out the central region to avoid the 0th order.
+      - Selects high-intensity pixels above a threshold.
+      - Fits a circle to the selected points, optionally filtering outliers based on distance from the estimated center.
+      - Optionally displays fitting statistics and visualizations.
 
     Parameters
     ----------
     img : np.ndarray
-        CCD image data, shape (x, y).
+        2D CCD image data, shape (x, y).
     centerXY : tuple[int, int]
-        Estimated center of the circle (x, y).
+        Initial estimate for the center of the circle (x, y).
     filterR_px : int, optional (default=30)
-        Radius of the inner circle filter in pixels.
+        Radius of the inner mask (in pixels) to exclude the central region.
     threshhold : float, optional (default=0.8)
-        Threshold for data to be considered for the fit.
+        Fraction of the maximum intensity to use as the threshold for selecting points.
     sigma_Fit : float, optional (default=1)
-        Range of data points considered for the fit in sigma of the distance to the estimated center.
+        Number of standard deviations for filtering outlier points in the fit.
     showStatistics : bool, optional (default=False)
-        If True, plot fitting statistics.
+        If True, plot fitting statistics and visualizations.
 
     Returns
     -------
-    radius : float
-        Estimated radius in pixels.
-    center : tuple[int, int]
-        Estimated center in pixels.
+    circleFit : CircleFit
+        CircleFit object containing the estimated center (x, y), radius (pixels), and fit error (pixels).
     """
     #filter the 0th order
     crop = img.copy()
     if crop.dtype == complex:
         crop = np.abs(crop)
     X, Y = np.meshgrid(np.linspace(1,img.shape[1],img.shape[1]),np.linspace(1,img.shape[0],img.shape[0]))
-    # print(img.shape)
-    # print(X.shape)
     c_mask = np.sqrt(np.power(X-centerXY[0],2)+np.power(Y-centerXY[1],2))<=filterR_px
     crop[c_mask] = 0
-    # plt.figure()
-    # plt.imshow(crop)
-    # plt.show()
     c_array = img.copy()
     c_array[~c_mask] = 0
     max_mask = crop > threshhold*np.nanmax(crop)
     max_points = np.indices(crop.shape)
     max_points = np.asarray(((max_points[1][max_mask]),(max_points[0][max_mask])))
     # print(max_points)
-    maxima = crop[max_mask]
     crop[~max_mask] = 0
-    center, radius = fitCircle(max_points.reshape(2,(max_points.shape[1])),c_array,sigma_Fit, showStatistics)
+    circleFit = fitCircle(max_points.reshape(2,(max_points.shape[1])),c_array,sigma_Fit, showStatistics)
     if showStatistics:
         plt.figure()
         plt.imshow(crop, origin = "lower")
         plt.scatter(*max_points, marker="x", color = "red")
-        plt.scatter(*center)
-        c = plt.Circle(center,radius, color = "green", ls = ":",fill=False)
+        plt.scatter(*circleFit.center)
+        c = plt.Circle(circleFit.center,circleFit.radius, color = "green", ls = ":",fill=False)
         ax = plt.gca()
         ax.add_patch(c)
-        ax.add_patch(plt.Circle(center, filterR_px, color = "yellow", ls = ":",fill=False))
+        ax.add_patch(plt.Circle(circleFit.center, filterR_px, color = "yellow", ls = ":",fill=False))
         #rad = plt.Circle(estimated_center)
         plt.show()
-    return radius, center
+    return circleFit
 
-def calculateRadius(radius_px, pixelSize_mm=3.45e-3):
+def calculateRadius(
+        circle: CircleFit, 
+        magnification=1, 
+        pixelSize_mm=3.45e-3
+) -> CircleFit:
     """
-    Calculates the radius in meters from pixels.
+    Converts a fitted circle's radius and error from pixels to meters.
 
     Parameters
     ----------
-    radius_px : float
-        Radius in pixels.
-    pixelSize_mm : float, optional (default=3.45e-3)
-        Pixel size in millimeters.
+    circle : CircleFit
+        CircleFit object containing center coordinates, radius (in pixels), and error (in pixels).
+    magnification : float, optional
+        Magnification factor for converting pixels to real-world units (default: 1).
+    pixelSize_mm : float, optional
+        Pixel size in millimeters (default: 3.45e-3 mm).
 
     Returns
     -------
-    radius_m : float
-        Radius in meters.
+    circle_meters : CircleFit
+        CircleFit object with center unchanged, but radius and error converted to meters.
     """
-    return radius_px*pixelSize_mm*1e-3
+    circleMeters = CircleFit(circle.center, circle.radius*magnification*pixelSize_mm*1e-3, circle.error*magnification*pixelSize_mm*1e-3)
+    return circleMeters
 
-def getCurrentAngleLS(lsSLice:np.ndarray, threshhold, center:tuple[int,int], maskRadius:int, showPlot=False, showFit=False) -> tuple[float, float]:
+def getCurrentAngleLS(
+        lsSLice:np.ndarray, 
+        threshhold, 
+        center:tuple[int,int], 
+        maskRadius:int, 
+        showPlot=False, 
+        showFit=False
+) -> tuple[float, float, float]:
     """
     Calculates the angle to the x-axis (counterclockwise) of a lightspring slice.
 
@@ -769,81 +1015,16 @@ def getCurrentAngleLS(lsSLice:np.ndarray, threshhold, center:tuple[int,int], mas
         plt.colorbar()
         plt.legend()
         plt.show()
-    return (getAngle(maxPoint), getAngle(weightedSquared), getAngle(massPoint))
+    return getAngle(maxPoint), getAngle(weightedSquared), getAngle(massPoint)
 
-def getOGV(lightspringData:np.ndarray, times:np.ndarray, estimatedCenter:tuple[int,int], maskRadius:int,
-           threshhold=0.8, sigma_Fit=1, fromIsosurface=False, isoLevel=.5, isoTolerance=10,
-           showStatistics=False, showFit=False, angleFittingAlgo=1):
+def calculateLOGV_theory(
+        radius_m:float, 
+        radiusError_m:float, 
+        dOmega=2*np.pi*C0/778e-9 - 2*np.pi*C0/806e-9, 
+        dl=7
+) -> tuple[float, float]:
     """
-    Calculates the OGV (Optical Gauge Velocity) and radius for each slice of the `lightspringData`, as well as the
-    average OGV and average radius.
-
-    Parameters
-    ----------
-    lightspringData : np.ndarray
-        3D array representing the light spring data with shape (t, x, x).
-    times : np.ndarray
-        1D array of timestamps for each time slice.
-    estimatedCenter : tuple[int, int]
-        Coordinates (x, y) of the estimated center.
-    maskRadius : int
-        Radius of the circular mask.
-    threshhold : float, optional (default=0.8)
-        Threshold for data filtering.
-    sigma_Fit : float, optional (default=1.0)
-        Sigma range for radius fitting.
-    fromIsosurface : bool, optional (default=False)
-        If True, use isosurface mask for angle calculation.
-    isoLevel : float, optional (default=0.5)
-        Relative isosurface level.
-    isoTolerance : float, optional (default=10)
-        Tolerance for isosurface level.
-    showStatistics : bool, optional (default=False)
-        If True, plot fitting statistics.
-    showFit : bool, optional (default=False)
-        If True, plot fit for each slice.
-    angleFittingAlgo : int, optional (default=1)
-        Algorithm for angle calculation (0=max, 1=squared weighted, 2=center of mass).
-
-    Returns
-    -------
-    averageOGV : float
-        Average optical gauge velocity [rad/m].
-    averageRadius : float
-        Average radius [m].
-    OGV_array : np.ndarray
-        OGV for each slice [rad/m].
-    radius_array : np.ndarray
-        Radius for each slice [m].
-    angle_array : np.ndarray
-        Angular position for each slice [rad].
-    """
-    data = np.copy(lightspringData)
-    if fromIsosurface:
-        mask = makeIsosurfaceMask(lightspringData, isoLevel, isoTolerance)
-        data[~mask] = 0
-        angleFittingAlgo = 2 #center of mass
-        m = np.any(mask,axis= (1,2))
-    meassured = np.zeros((data.shape[0],2)) # axis1: 0: r, 1: angle
-    for i in range(meassured.shape[0]):
-        # if fromIsosurface and not m[i]:
-        #     meassured[i,0]=np.nan
-        #     meassured[i,1]=np.nan
-        #     continue
-        r, center = findRadius(data[i,:,:], estimatedCenter, maskRadius, threshhold, sigma_Fit, showStatistics)
-        angle = getCurrentAngleLS(data[i,:,:], threshhold, center, r*0.65, showStatistics, showFit)[angleFittingAlgo]
-        r = calculateRadius(r)
-        meassured[i,0]=r
-        meassured[i,1]=angle
-    #put fit here instead of gradient
-    ogv = np.gradient(meassured[:,1], times)
-    avgOGV = np.nanmean(ogv)
-    avgRadius = np.nanmean(meassured[:,0])
-    return avgOGV, avgRadius, ogv, meassured[:,0], meassured[:,1]
-
-def calculateLOGV_theory(radius, dOmega=2*np.pi*C0/778e-9 - 2*np.pi*C0/806e-9, dl=7):
-    """
-    Calculates the theoretical LOGV (Local Optical Gauge Velocity).
+    Calculates the theoretical LOGV (Linear Optical Group Velocity).
 
     Parameters
     ----------
@@ -858,10 +1039,12 @@ def calculateLOGV_theory(radius, dOmega=2*np.pi*C0/778e-9 - 2*np.pi*C0/806e-9, d
     -------
     logv : float
         Theoretical LOGV value.
+    logv_error : float
+        Theoretical LOGV value.
     """
-    return radius*(dOmega/dl)
+    return radius_m*(dOmega/dl), radiusError_m*(dOmega/dl)
 
-def makeVolumeArray(data) -> np.ndarray:
+def makeVolumeArray(data) -> STPulseData | np.ndarray:
     """
     Combines a list of n equal-sized ndarrays of shape (x, y) into one array of shape (n, x, y).
 
@@ -883,52 +1066,80 @@ def makeVolumeArray(data) -> np.ndarray:
         if isinstance(data[0], np.ndarray):
             return fuseArrays(data)
     elif isinstance(data, (Path)):
-        d = []
-        times = []
-        files = sorted([f for f in os.listdir(data) if f[-4:] == ".npy"], key = lambda x: getMotorPos(x), reverse=True)
-        for file in files:
-            d.append(np.load(data/file))
-            times.append(calculateTiming(getMotorPos(file)))
-        return fuseArrays(d), np.asarray(times)
+        try:
+            path = _searchForSTPulseData(data)
+            print(f"STPulseData found at\n{path}\nLoading...")
+            return loadSTPulseData(path)
+        except (FileNotFoundError, FileExistsError) as e:
+            d = []
+            times = []
+            motorPos = []
+            files = sorted([f for f in os.listdir(data) if f[-4:] == ".npy"], key = lambda x: getMotorPos(x), reverse=True)
+            for file in files:
+                d.append(np.load(data/file))
+                motorPos.append(getMotorPos(file)) if getMotorPos(file) is not None else motorPos.append(np.nan)
+                times.append(calculateTiming(getMotorPos(file)))
+            return STPulseData(fuseArrays(d), np.asarray(times), np.asarray(motorPos))
     
-def removeDoubleLitted(data, significance=1.5, plot=False) -> tuple[np.ndarray, np.ndarray]:
+def removeDoubleLitted(
+        data: np.ndarray | STPulseData,
+        significance=1.5, 
+        plot=False
+) -> tuple[np.ndarray | STPulseData, np.ndarray]:
     """
-    Removes exposures with double illumination based on summed intensity.
+    Removes exposures with double illumination (double-litted) based on summed intensity outliers.
+
+    For each exposure (slice), the total intensity is summed. Exposures with summed intensity significantly above the median (by a factor of `significance`) are considered double-illuminated and removed.
 
     Parameters
     ----------
-    data : np.ndarray
-        3D data array of shape (z, x, y).
+    data : np.ndarray or STPulseData
+        3D data array of shape (n, x, y) or STPulseData object containing such an array.
     significance : float, optional (default=1.5)
-        Significance threshold for outlier removal.
+        Threshold factor: exposures with summed intensity > significance × median are removed.
     plot : bool, optional (default=False)
-        If True, plot histogram of summed intensities.
+        If True, plot a histogram of summed intensities.
 
     Returns
     -------
-    filtered_data : np.ndarray
+    filtered_data : np.ndarray or STPulseData
         Data with double-illuminated exposures removed.
     mask : np.ndarray
-        Boolean mask indicating which exposures were kept.
+        Boolean mask indicating which exposures were kept (True = kept, False = removed).
+
+    Raises
+    ------
+    TypeError
+        If input is not a numpy ndarray or STPulseData object.
+    ValueError
+        If input data is not 3D.
     """
-    summed = np.sum(np.sum(data,1),1)
+    if isinstance(data, STPulseData):
+        dataP = data.data
+    elif isinstance(data, np.ndarray):
+        dataP = data
+    else:
+        raise TypeError("Input data must be a numpy ndarray or STPulseData object")
+    if dataP.ndim != 3:
+        raise ValueError("Input data must be a 3D array of shape (n, x, y)")
+    summed = np.sum(np.sum(dataP,1),1)
     if plot:
         plt.figure()
         plt.hist(summed, bins = 20)
         plt.show()
     mask = summed > significance*np.median(summed)
+    if isinstance(data, STPulseData):
+        return _cropSTPulseData(data, ~mask), ~mask
     return data[~mask], ~mask
 
-def cropByTimestamp(data:np.ndarray, times:np.ndarray, tMin, tMax):
+def cropByTimestamp(data:STPulseData, tMin:float, tMax:float)->STPulseData:
     """
-    Crops data and timestamps to the specified time window.
+    Crops the STPulseData object to include only slices with timestamps within the specified range.
 
     Parameters
     ----------
-    data : np.ndarray
-        Data array of shape (t, ...).
-    times : np.ndarray
-        Array of timestamps, shape (t,).
+    data : STPulseData
+        Data object containing a 3D array (n, x, y) and corresponding timestamps.
     tMin : float
         Minimum timestamp to keep.
     tMax : float
@@ -936,33 +1147,49 @@ def cropByTimestamp(data:np.ndarray, times:np.ndarray, tMin, tMax):
 
     Returns
     -------
-    cropped_data : np.ndarray
-        Cropped data array.
-    cropped_times : np.ndarray
-        Cropped timestamps.
+    cropped_data : STPulseData
+        New STPulseData object containing only the slices and metadata where tMin <= time <= tMax.
     """
-    index = np.where((times<=tMax)&(times>=tMin))
-    return data[index], times[index]       
+    index = np.where((data.times<=tMax)&(data.times>=tMin))
+    return _cropSTPulseData(data, index)
 
-def makeIsosurfaceMask(data:np.ndarray, level:float, epsilon: float = 1):
+def makeIsosurfaceMask(
+        data: np.ndarray | STPulseData, 
+        level: float, 
+        epsilon: float = 1
+) -> np.ndarray:
     """
-    Creates a boolean mask to extract an isosurface at a specified level from a volume array.
+    Creates a boolean mask that identifies voxels within a specified intensity range around a relative isosurface level in a 3D volume.
+
+    If a STPulseData object is provided, the mask is computed from its `.data` attribute.
 
     Parameters
     ----------
-    data : np.ndarray
-        Volume array of shape (n, x, y).
+    data : np.ndarray or STPulseData
+        3D volume array of shape (n, x, y) or STPulseData object containing such an array.
     level : float
-        Relative isosurface level [0, 1].
+        Relative isosurface level as a fraction of the maximum value [0, 1].
     epsilon : float, optional (default=1)
-        Tolerance range around the isosurface level.
+        Tolerance range around the isosurface level. Voxels with |value - threshold| < epsilon are included.
 
     Returns
     -------
     mask : np.ndarray
-        Boolean mask where the isosurface is located.
-    """
+        Boolean mask of the same shape as the input data, where True indicates voxels near the specified isosurface level.
 
+    Raises
+    ------
+    TypeError
+        If `data` is not a numpy ndarray or STPulseData object.
+    ValueError
+        If `data` is not 3D or if `level` is not in [0, 1].
+    """
+    if type(data) is STPulseData:
+        data = data.data
+    if not isinstance(data, np.ndarray):
+        raise TypeError("Parameter `data` must be a numpy ndarray or STPulseData object")
+    if data.ndim != 3:
+        raise ValueError("Parameter `data` must be a 3D array of shape (n, x, y)")
     if not (0 <= level <= 1):
         raise ValueError("Parameter `level` must be in the range [0, 1]")
 
@@ -970,21 +1197,24 @@ def makeIsosurfaceMask(data:np.ndarray, level:float, epsilon: float = 1):
     mask = np.abs(data - threshold) < epsilon
     return mask
 
-def fitAngleData(data: np.ndarray, times: np.ndarray):
+def fitAngleData(data:np.ndarray, times:np.ndarray) -> tuple[float, float, RLMResults]:
     """
-    Fits the angle data to a robust linear model (y = m*x + b) using statsmodels and returns the slope and intercept.
+    Fits the angular data to a robust linear model (y = m*x + b) using statsmodels RLM.
+
+    This function unwraps the angle data, removes NaN values, and fits a robust linear model to angle vs. time.
+    It returns the slope (rate of angular change), intercept, and the fitted model object.
 
     Parameters
     ----------
-    data : np.ndarray
-        1D array of angle data, shape (t,).
-    times : np.ndarray
-        1D array of timestamps, shape (t,).
+    data : STPulseData
+        Data object containing:
+            - data: 1D array of angle values (radians), shape (t,)
+            - times: 1D array of timestamps, shape (t,)
 
     Returns
     -------
     slope : float
-        Slope of the robust linear fit.
+        Slope of the robust linear fit (angular velocity).
     intercept : float
         Intercept of the robust linear fit.
     model_fit : statsmodels.robust.robust_linear_model.RLMResults
@@ -1003,71 +1233,110 @@ def fitAngleData(data: np.ndarray, times: np.ndarray):
 
     return slope, intercept, rlm_results
 
-def getRadialIntensity(data: np.ndarray, center: tuple[int, int], cropRadius: int, showPlot: bool = False) -> np.ndarray:
+def getRadialIntensity(
+        data: STPulseData,
+        center: tuple[int, int], 
+        cropRadius: int, 
+) -> np.ndarray:
     """
-    Calculates the radial intensity profile of a 3D array (e.g., time or wavelength series of 2D images).
+    Calculates the maximum intensity within a circular region for each slice of a 3D dataset.
+
+    For each time slice (2D image), this function:
+      - Applies a circular mask centered at the specified coordinates with the given radius.
+      - Computes the maximum intensity value within the masked region.
+      - Optionally plots the masked intensity profile for each slice.
 
     Parameters
     ----------
-    data : np.ndarray
-        3D array of shape (n, x, y), where n is the number of slices.
+    data : STPulseData
+        Data object containing a 3D array (n, x, y), where n is the number of slices.
     center : tuple[int, int]
-        Center coordinates (x, y).
+        Center coordinates (x, y) of the circular mask.
     cropRadius : int
-        Mask radius in pixels.
-    showPlot : bool, optional (default=False)
-        If True, plot the radial intensity profile for each slice.
+        Radius of the circular mask in pixels.
 
     Returns
     -------
     intensityMax : np.ndarray
-        1D array of shape (n,), where each element is the maximal intensity of one slice.
+        1D array of shape (n,), where each element is the maximal intensity within the mask for one slice.
     """
-    n = data.shape[0]
+    n = data.data.shape[0]
     intensityMax = np.zeros(n)
     for i in range(n):
         x, y = np.meshgrid(
-            np.linspace(0, data.shape[1] - 1, data.shape[1]),
-            np.linspace(0, data.shape[2] - 1, data.shape[2])
+            np.linspace(0, data.data.shape[1] - 1, data.data.shape[1]),
+            np.linspace(0, data.data.shape[2] - 1, data.data.shape[2])
         )
         mask = np.sqrt((x - center[0]) ** 2 + (y - center[1]) ** 2) <= cropRadius
-        radial_profile = data[i].copy()
+        radial_profile = data.data[i].copy()
         radial_profile[~mask] = 0
         maxI = np.max(radial_profile)
         intensityMax[i] = maxI
     return intensityMax
 
+def cropByIntensity(
+        data: np.ndarray|STPulseData, 
+        intensity: np.ndarray, 
+        threshhold = 0.5
+) -> tuple[np.ndarray|STPulseData, np.ndarray]:
+    """
+    Returns only those slices of the data, timestamps, and intensity values where the intensity exceeds a specified fraction of the maximum intensity.
+
+    Parameters
+    ----------
+    data : STPulseData
+        Data object containing a 3D array (n, x, y) and corresponding timestamps.
+    intensity : np.ndarray
+        1D array of intensity values, shape (n,).
+    threshhold : float, optional
+        Fraction of the maximum intensity to use as the cutoff (default: 0.5).
+
+    Returns
+    -------
+    cropped_data : STPulseData
+        Data, times, and motor positions for slices where intensity > threshhold * max(intensity).
+    cropped_intensity : np.ndarray
+        Intensity values for the selected slices.
+    """
+    maxI = np.max(intensity)
+    index = np.where(intensity > maxI*threshhold)
+    if isinstance(data, STPulseData):
+        croppedData = _cropSTPulseData(data, index)
+    else:
+        croppedData = data[index]
+    return croppedData, intensity[index]
+
 def fitAnglesAndIntensity(
-    data: np.ndarray,
-    times: np.ndarray,
+    data: STPulseData,
     center: tuple[int, int],
     cropRadius: int,
     threshhold: float = 0.8,
-    crop: bool = True
-) -> tuple[list, np.ndarray, np.ndarray]:
+    crop: bool = True,
+    intensityThreshhold:float = 0.5
+) -> tuple[sm.robust.robust_linear_model.RLMResults, np.ndarray, np.ndarray, np.ndarray | None]:
     """
-    Calculates the angle and intensity for each time slice in a 3D data array, and fits the angle data to a robust linear model.
+    Calculates the angular position and intensity for each time slice in a 3D dataset, and fits the angle data to a robust linear model.
 
-    For each slice in the input data:
-      - Computes the angle using getCurrentAngleLS (using squared weighting).
+    For each slice:
+      - Computes the angular position using getCurrentAngleLS (squared weighted method).
       - Calculates the maximum radial intensity using getRadialIntensity.
-      - Optionally filters out slices with intensity below half the maximum.
+      - Optionally filters out slices with intensity below a threshold.
       - Fits the resulting angle vs. time data using a robust linear model (statsmodels RLM).
 
     Parameters
     ----------
-    data : np.ndarray
-        3D array of shape (n, x, y), where n is the number of slices.
-    times : np.ndarray
-        1D array of timestamps, shape (n,).
+    data : STPulseData
+        Data object containing a 3D array (n, x, y) and corresponding timestamps.
     center : tuple[int, int]
         Center coordinates (x, y) for angle and intensity calculation.
     cropRadius : int
         Mask radius in pixels for angle and intensity calculation.
     threshhold : float, optional
-        Threshold for angle calculation (passed to getCurrentAngleLS).
+        Threshold for angle calculation (passed to getCurrentAngleLS, default: 0.8).
     crop : bool, optional
-        If True, only slices with intensity above half the maximum are used for fitting.
+        If True, only slices with intensity above the specified threshold are used for fitting (default: True).
+    intensityThreshhold : float, optional
+        Intensity threshold for filtering slices (default: 0.5).
 
     Returns
     -------
@@ -1080,44 +1349,182 @@ def fitAnglesAndIntensity(
     times (optional) : np.ndarray
         Returned only if cropping is enabled; filtered timestamps.
     """
-    n = data.shape[0]
+    n = data.data.shape[0]
     angles = np.nan*np.zeros(n)
 
     for i in range(n):
-        angles[i] = getCurrentAngleLS(data[i], threshhold, center, cropRadius)[1]
+        angles[i] = getCurrentAngleLS(data.data[i], threshhold, center, cropRadius)[1]
     # Get intensity profile for each slice
-    intensities = getRadialIntensity(data, center, cropRadius, showPlot=False)
+    intensities = getRadialIntensity(data, center, cropRadius)
     angles = np.array(angles)
     if crop:
-        angles, times, intensities = cropByIntensity(angles, times, intensities) 
+        angleStruct = STPulseData(angles, data.times, data.motorPositions)
+        angles, intensities = cropByIntensity(angleStruct, intensities, intensityThreshhold) 
     # Fit angles vs times
-    angleFit = fitAngleData(angles, times)[2]
+        angleFit = fitAngleData(angles.data, angles.times)[2]
+    else:
+        angleFit = fitAngleData(angles, data.times)[2]
+    # If cropping is enabled, return the filtered angles and times
     if crop:
-        return angleFit, intensities, angles, times
-    return angleFit, intensities, angles
+        return angleFit, intensities, angles.data, angles.times
+    return angleFit, intensities, angles, None
 
-def cropByIntensity(data: np.ndarray, times: np.ndarray, intensity: np.ndarray) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+
+def getOGV(lightspringData:STPulseData, estimatedCenter:tuple[int,int], maskRadius:int, magnification=1,
+           threshhold=0.8, sigma_Fit=1, filterbyIntensity=False, intensityThreshhold=0.5,
+           showStatistics=False, showFit=False, angleFittingAlgo=1)-> OGVMeasurement:
     """
-    Selects and returns only those slices of the data, timestamps, and intensity values where the intensity exceeds half of the maximum intensity.
+    Analyze a 3D lightspring dataset to extract the Optical Group Velocity (OGV) and related physical parameters.
+
+    For each time slice, this function:
+      - Fits a circle to estimate the lightspring's radius and center.
+      - Calculates the angular position of the lightspring using the specified algorithm.
+      - Converts the radius from pixels to meters using the given magnification.
+      - Optionally filters slices by intensity for robust fitting.
+      - Fits the angular position as a function of time to determine the OGV.
 
     Parameters
     ----------
-    data : np.ndarray
-        3D array of shape (n, x, y), where n is the number of slices.
-    times : np.ndarray
-        1D array of timestamps, shape (n,).
-    intensity : np.ndarray
-        1D array of intensity values, shape (n,).
+    lightspringData : STPulseData
+        Object containing a 3D array (t, x, y) and corresponding timestamps.
+    estimatedCenter : tuple[int, int]
+        Initial estimate for the lightspring center (x, y).
+    maskRadius : int
+        Radius for the circular mask used in calculations (pixels).
+    magnification : float, optional
+        Magnification factor for converting pixels to meters (default: 1).
+    threshhold : float, optional
+        Intensity threshold for feature detection (default: 0.8).
+    sigma_Fit : float, optional
+        Sigma range for radius fitting (default: 1).
+    filterbyIntensity : bool, optional
+        If True, only use slices with intensity above a threshold for fitting.
+    intensityThreshhold : float, optional
+        Intensity threshold for filtering slices (default: 0.5).
+    showStatistics : bool, optional
+        If True, display fitting statistics.
+    showFit : bool, optional
+        If True, plot fit results for each slice.
+    angleFittingAlgo : int, optional
+        Algorithm for angle calculation: 0=max, 1=squared weighted, 2=center of mass (default: 1).
 
     Returns
     -------
-    cropped_data : np.ndarray
-        Data slices where intensity > 0.5 * max(intensity).
-    cropped_times : np.ndarray
-        Corresponding timestamps for the selected data.
-    cropped_intensity : np.ndarray
-        Corresponding intensity values for the selected data.
+    OGVMeasurement
+        Data class containing:
+            OGV (float): Fitted optical gauge velocity (rad/m).
+            OGVError (float): Error of the OGV fit.
+            LOGV (float): Local optical gauge velocity (OGV × average radius).
+            LOGVError (float): Error of the LOGV value.
+            avgRadius (float): Average radius (meters).
+            avgRadiusError (float): Error of the average radius.
+            radii (np.ndarray): Radii for each slice (meters).
+            radiiError (np.ndarray): Error for each radius (meters).
+            anglesMeassured (np.ndarray): Angular positions for each slice (radians).
+            intensities (np.ndarray): Maximum intensity for each slice.
+            times (np.ndarray): Timestamps used for fitting.
+            angleFit (statsmodels result): Fitted angle vs. time model.
+            angles (np.ndarray): Angles used for fitting (radians).
     """
-    maxI = np.max(intensity)
-    index = np.where(intensity > maxI*0.5)
-    return data[index], times[index], intensity[index]
+    data = np.copy(lightspringData.data)
+    times = np.copy(lightspringData.times)
+    meassured = np.zeros((data.shape[0],2)) # axis1: 0: r, 1: angle
+    c_errors = np.zeros((data.shape[0]))
+    #fitting the rawdata
+    for i in range(meassured.shape[0]):
+        fittedCircle = findRadius(data[i,:,:], estimatedCenter, maskRadius, threshhold, sigma_Fit, showStatistics)
+        angle = getCurrentAngleLS(data[i,:,:], threshhold, fittedCircle.center, fittedCircle.radius*0.65, showStatistics, showFit)[angleFittingAlgo]
+        realCircle = calculateRadius(fittedCircle, magnification=magnification)
+        meassured[i,0]=realCircle.radius
+        c_errors[i]=realCircle.error
+        meassured[i,1]=angle
+    #process data
+    avgRadius = np.nanmean(meassured[:,0])
+    avgCircleError = np.nanmean(c_errors)
+    anglefit, intensities, angles, timesFit = fitAnglesAndIntensity(lightspringData, estimatedCenter, maskRadius, threshhold, crop=filterbyIntensity, intensityThreshhold=intensityThreshhold)
+    if filterbyIntensity:
+        times = timesFit
+    #calculate OGV
+    ogv = anglefit.params[1]
+    ogv_error = anglefit.bse[1]
+    logv = ogv*avgRadius
+    logv_error = np.sqrt((ogv*avgCircleError)**2 + (avgRadius*ogv_error)**2)
+    return OGVMeasurement(ogv, ogv_error, logv, logv_error, 
+                          avgRadius, avgCircleError, 
+                          meassured[:,0], c_errors,
+                          meassured[:,1], intensities, times, anglefit, angles)
+
+
+def extractParametersFromFilename(filename: str) -> dict:
+    """
+    Extracts parameters from a filename formatted as 'parameter1_value1_parameter2_value2...'.
+
+    Parameters
+    ----------
+    filename : str
+        The filename from which to extract parameters.
+
+    Returns
+    -------
+    dict
+        Dictionary with parameter names as keys and their corresponding values.
+    """
+    parameters = {}
+    params = {}
+    parts = filename.split('_')
+    for i in range(0, len(parts), 2):
+        if i + 1 < len(parts):
+            params[parts[i]] = parts[i + 1]
+    return params
+
+def convertFolderDataToSTPulseData(
+        folderPath: Path, 
+        deleteOld: bool = False
+) -> None:
+    """
+    Reconstructs data from a folder containing .npy files and saves the results.
+
+    Parameters
+    ----------
+    folderPath : Path
+        Path to the folder containing .npy files.
+    deleteOld : bool, optional
+        If True, deletes the original .npy files after reconstruction (default: False).
+    Raises
+    ------
+    FileNotFoundError
+        If no .npy files are found in the specified folder.
+    """
+    files = os.listdir(folderPath)
+    files = [f for f in files if f.endswith(".npy")]
+    if files == []:
+        raise FileNotFoundError(f"No .npy files found in {folderPath}.")
+    date = os.path.getmtime(folderPath/files[0])
+    date = time.strftime("%y%m%d", time.gmtime(date))
+    params = ParameterKeys.getAllParams(files[0])
+    if ParameterKeys.MOTOR_POSITION in params:
+        del params[ParameterKeys.MOTOR_POSITION]
+    params = ParameterKeys.dictToName(params)
+    data = makeVolumeArray(folderPath)
+    data.safeToFile(folderPath/("STPulseData_"+params+"_"+f"{ParameterKeys.N_SLICES}={data.data.shape[0]}"+"_"+date))
+    if deleteOld:
+        for file in files:
+            os.remove(folderPath/file)
+
+def loadSTPulseData(path) -> STPulseData:
+    """
+    Loads a STPulseData object from a specified path.
+
+    Parameters
+    ----------
+    path : Path
+        Path to the STPulseData file.
+
+    Returns
+    -------
+    STPulseData
+        Loaded STPulseData object.
+    """
+    if not os.path.isfile(path):
+        raise FileNotFoundError(f"File {path} does not exist.")
+    return STPulseData.loadFromFile(path)
