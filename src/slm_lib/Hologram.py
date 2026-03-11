@@ -194,12 +194,11 @@ class Hologram:
         return self.customOAMFunction(boundaries, OAM)
 
     def applyGratingToSections(self, boundaries:np.ndarray = None, holoIn:np.ndarray = None, g:float = 1, dphi:np.ndarray=None, plot=False):
-        holoOut = np.copy(holoIn)
         if boundaries is None:
             boundaries = self.boundaries
         if holoIn is None:
             holoIn = self.holo
-
+        holoOut = np.copy(holoIn)
         n = boundaries.shape[0]-1
         if dphi is None:
             dphi = 2*np.pi/n
@@ -335,7 +334,7 @@ class Hologram:
     def setZernikeCorrection(self, pist:float = 0,
                           xTilt:float = 0, yTilt:float = 0,
                           defocus:float = 0, 
-                          verAstic:float = 0, horAstic:float = 0,
+                          astic0:float = 0, astic45:float = 0,
                           verComa:float = 0, horComa:float = 0,
                           verTref:float = 0, horTref:float = 0,
                           spherical:float = 0):
@@ -347,8 +346,8 @@ class Hologram:
         holo = holo + xTilt * (self.rho*np.cos(self.phi)) 
         holo = holo + yTilt * (self.rho*np.sin(self.phi))
         holo = holo + defocus * (2*np.power(self.rho,2)-1)
-        holo = holo + verAstic * (np.power(self.rho,2)*np.cos(2*(self.phi)))
-        holo = holo + horAstic * (np.power(self.rho,2)*np.sin(2*(self.phi)))
+        holo = holo + astic0 * (np.power(self.rho,2)*np.cos(2*(self.phi)))
+        holo = holo + astic45 * (np.power(self.rho,2)*np.sin(2*(self.phi)))
         holo = holo + horComa * ((3*np.power(self.rho,2)-2)*self.rho*np.cos(self.phi))
         holo = holo + verComa * ((3*np.power(self.rho,2)-2)*self.rho*np.sin(self.phi))
         holo = holo + verTref * (np.power(self.rho,3)*np.sin(3*(self.phi)))
