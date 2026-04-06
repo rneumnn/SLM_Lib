@@ -4,6 +4,7 @@ from zernpy import generate_polynomials, ZernPol, fit_polynomials
 from zernpy.calculations.fit_zernike_pols import crop_phases_img
 from pathlib import Path
 from matplotlib import pyplot as plt
+from matplotlib.axes import Axes
 
 DEFAULT_PIXELPITCH = 29.6e-6  # default pixel pitch for the source WFS, used for real-world normalization if not set otherwise
 
@@ -138,6 +139,17 @@ class PhaseFile:
 
     @staticmethod
     def loadFile(path, delimiter=",", crop_radius=0.5, pixelpitch=DEFAULT_PIXELPITCH):
+        """
+        Based on numpy loadtxt, but returns a PhaseFile object with the loaded phase data and parameters set.
+            :param path: Path to the file containing phase data
+            :type path: Path or str
+            :param delimiter: Delimiter used in the file, default ","
+            :type delimiter: str
+            :param crop_radius: 0.5
+            :type crop_radius: float
+            :param pixelpitch: Pixelpitch of device, defaultDEFAULT_PIXELPITCH
+            :type pixelpitch: float
+        """
         return PhaseFile(path, delimiter, crop_radius, pixelpitch)
 
     def set_pixelpitch(self, pixelpitch):
@@ -154,6 +166,36 @@ class PhaseFile:
         )
         self.coefficients = fit[0]
         return fit
+
+    @staticmethod
+    def average_files_phasix(folder:Path, crop_radius=0.5):
+        """
+        Load multiple phasefiles from the given folder and average them.
+        Returns a PhaseFile object with the averaged phase and the given crop_radius.
+            :param folder: Path to the folder containing the files
+            :type folder: Path
+            :param crop_radius: crop radius for analysis, 0.5
+            :type crop_radius: float
+        """
+        phase_files = sorted(folder.glob("PHA*.csv"))
+        if not phase_files:
+            raise ValueError(f"No files found in {folder} matching pattern 'PHA*.csv'")
+
+        phases = []
+        for f in phase_files:
+            phase_data = np.loadtxt(f, delimiter=",")
+            phases.append(phase_data)
+
+        avg_phase = np.mean(np.asarray(phases), axis=0)
+        avg_phase_file = PhaseFile.__new__(PhaseFile)  # create an uninitialized instance
+        avg_phase_file.phase = avg_phase
+        avg_phase_file.fileSize = avg_phase.shape
+        avg_phase_file.minSize = min(avg_phase_file.fileSize)
+        avg_phase_file.crop_radius = crop_radius
+        avg_phase_file.pixelpitch = DEFAULT_PIXELPITCH
+        avg_phase_file.realworldNormalizationFactor = avg_phase_file._calcNormalizationFactor()
+        return avg_phase_file
+        
 
     @staticmethod
     def make_polar_mesh(shape, crop_radius=1.0, phase_offset = np.pi*3/2, crop_pupil=True):
@@ -257,6 +299,22 @@ class PhaseFile:
             m, n = z.get_mn_orders()
             total_phase += a * zernike_extended(m, n, r_mesh, theta_mesh)
         return total_phase
+    
+    @staticmethod
+    def plot_phase_on_axes(ax:Axes, phase, title = "Phase", cmap="viridis", wrapped = True):
+        if wrapped:
+            phase_to_plot = np.mod(phase, 2*np.pi)
+        else:
+            phase_to_plot = phase
+        c = ax.imshow(phase_to_plot, cmap=cmap)
+        ax.set_title(title)
+        plt.colorbar(c, ax=ax)
+
+    def show_phase(self, title = "Phase", cmap="viridis", wrapped = True):
+        fig, ax = plt.subplots(figsize=(6,6))
+        self.plot_phase_on_axes(ax, self.phase, title, cmap, wrapped)
+        plt.show()
+        return fig
     
 
     
