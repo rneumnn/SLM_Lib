@@ -109,6 +109,12 @@ class Hologram:
         OAM = np.flip(np.linspace(OAM_start,OAM_start+(n-1)*deltaL,n))
         return radia, OAM
 
+    def flipHolo(self, axis:int = 1):
+        self.holo = np.flip(self.holo, axis=axis)
+        self._updateModes(self.boundaries, -self.OAMs)
+        self._finalizeHologram()
+        return self.holo
+
     ## Hologram functions
     def vortex(self,OAM:int, rMin = None, rMax = None):
         if rMin is None: rMin = 0
