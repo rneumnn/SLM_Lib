@@ -5,8 +5,9 @@ from zernpy.calculations.fit_zernike_pols import crop_phases_img
 from pathlib import Path
 from matplotlib import pyplot as plt
 from matplotlib.axes import Axes
+from slm_lib.Hologram import SLM_WIDTH_PX, SLM_HEIGHT_PX, SLM_PIXEL_LENGTH, create_checkerboard
 
-DEFAULT_PIXELPITCH = 29.6e-6  # default pixel pitch for the source WFS, used for real-world normalization if not set otherwise
+DEFAULT_PIXELPITCH = 29.6e-6  # [m] default pixel pitch for the source WFS, used for real-world normalization if not set otherwise
 
 def cart2pol(x, y):
     rho = np.sqrt(x**2 + y**2)
@@ -261,7 +262,9 @@ class PhaseFile:
         Scale factor s = R_dev / R_fit
         """
         R_fit = self.source_physical_radius()
+        print(f"Source physical radius: {R_fit} m")
         R_dev = self.device_physical_radius(devicePixelpitch, deviceRadiusPx, deviceCropRadius)
+        print(f"Device physical radius: {R_dev} m")
         return R_dev / R_fit
     
     def transform_pupil_size(self, scaleFactor)->list[float]:
@@ -306,7 +309,7 @@ class PhaseFile:
             phase_to_plot = np.mod(phase, 2*np.pi)
         else:
             phase_to_plot = phase
-        c = ax.imshow(phase_to_plot, cmap=cmap)
+        c = ax.imshow(phase_to_plot, cmap=cmap, vmin=0 if wrapped else None, vmax=2*np.pi if wrapped else None)
         ax.set_title(title)
         plt.colorbar(c, ax=ax)
 
@@ -316,7 +319,76 @@ class PhaseFile:
         plt.show()
         return fig
     
+    def plot_zernike_modes(self, wrapped = False, cmap="coolwarm"):
+        if self.zernikes is None:
+            raise ValueError("No Zernikes to plot. Fit the Zernikes first.")
+        
+        fig, axs = plt.subplots(1, len(self.zernikes), figsize=(4*len(self.zernikes), 4))
+        for z, ax in zip(self.zernikes, axs):
+            m, n = z.get_mn_orders()
+            mode_phase = zernike_extended(m, n, *self._createNormPolarMesh())*self.coefficients[self.zernikes.index(z)]
+            self.plot_phase_on_axes(ax, mode_phase, title=f"{z.get_polynomial_name()}\nZernike m={m}, n={n}", cmap=cmap, wrapped=False)
+        plt.tight_layout()
+        plt.show()
+        return fig
+    
+    def plot_coefficients(self, exclude_indeces = []):
+        if self.coefficients is None or self.zernikes is None:
+            raise ValueError("No coefficients to plot. Fit the Zernikes first.")
+        
+        fig, ax = plt.subplots(figsize=(8,4))
+        m_n_labels = [f"m={z.get_mn_orders()[0]}, n={z.get_mn_orders()[1]}" for z in self.zernikes]
+        name_labels = [z.get_polynomial_name() for z in self.zernikes]
+        # Exclude specified indices
+        m_n_labels = [label for i, label in enumerate(m_n_labels) if i not in exclude_indeces]
+        name_labels = [label for i, label in enumerate(name_labels) if i not in exclude_indeces]
+        coefficients = [coef for i, coef in enumerate(self.coefficients) if i not in exclude_indeces]
+        ax.bar(name_labels, coefficients)
+        ax.set_title("Zernike Coefficients")
+        ax.set_ylabel("Coefficient Value")
+        plt.xticks(rotation=90)
+        plt.tight_layout()
+        plt.show()
+        return fig
 
+    def make_SLM_phase_pattern(self, deviceCropRadius, devicePixelpitch=SLM_PIXEL_LENGTH, shape = (SLM_HEIGHT_PX, SLM_WIDTH_PX), checkerboard = None, wrapped = True, invertCoefficients = False):
+        """
+        Convenience function to get the phase pattern to apply on the SLM/device directly from the fitted Zernikes and target device parameters.
+        This combines the scaling of coefficients and evaluation on the device polar mesh.
+
+            :param deviceCropRadius: Crop radius on the device where Zernikes are evaluated. Refferes to the Beamradius normalized to the device physical radius. E.g. 0.9 means the beam radius is 90% of the device physical radius.
+            :type deviceCropRadius: float
+            :param devicePixelpitch: Pixelpitch of the SLM/Screen. Default is Hologram.SLM_PIXEL_LENGTH.
+            :type devicePixelpitch: float
+            :param shape: Shape of the SLM/Screen. Default is (Hologram.SLM_HEIGHT_PX, Hologram.SLM_WIDTH_PX).
+            :type shape: tuple[int]
+            :param checkerboard: Optional checkerboard pattern on the outside of the phase pattern. If None, no checkerboard is applied. If int, defines the size of the checkerboard squares in pixels.
+            :type checkerboard: int or None
+            :param wrapped: Whether to wrap the phase values. Default is True.
+            :type wrapped: bool
+            :param invertCoefficients: Whether to invert the sign of the Zernike coefficients. This can be useful if the SLM adds a phase delay and you want to pre-compensate for it. Default is False.
+            :type invertCoefficients: bool
+            :return: Phase pattern to apply on the SLM/device.
+        """
+        if self.coefficients is None or self.zernikes is None:
+            raise ValueError("Fit the Zernikes first.")
+        if checkerboard is not None and (not isinstance(checkerboard, int) or checkerboard <= 0):
+            raise ValueError("Checkerboard must be a positive integer defining the square size in pixels, or None to disable.")
+        background_pattern = np.zeros(shape)
+        if checkerboard is not None:
+            background_pattern = create_checkerboard(*shape, checkerboard)
+        deviceRadiusPx=np.max(shape)//2
+        scaleFactor = self.get_scale_factor_to_device(devicePixelpitch, deviceRadiusPx, deviceCropRadius)
+        transformed_coeffs = self.transform_pupil_size(scaleFactor)
+        print(f"Scale factor to device: {scaleFactor}\nTransformed coefficients: {transformed_coeffs}")
+        r_mesh, theta_mesh = self.make_polar_mesh(shape, crop_radius=deviceCropRadius)
+        print(f"Device polar mesh created with shape {r_mesh.shape} and crop_radius {deviceCropRadius}: r_mesh max={np.nanmax(r_mesh)}, r_mesh min={np.nanmin(r_mesh)}")
+        beam = self.evaluate_zernikes_on_mesh(transformed_coeffs, self.zernikes, r_mesh, theta_mesh)
+        if invertCoefficients:
+            beam = -beam
+        if wrapped:
+            beam = np.mod(beam, 2*np.pi)
+        return np.where(np.isnan(beam), background_pattern, beam)
     
 if __name__ == "__main__":
     crop_radius = 0.55

@@ -7,7 +7,7 @@ import re
 
 SLM_WIDTH_PX = 1280
 SLM_HEIGHT_PX = 1024
-SLM_PIXEL_LENGTH = 12.5e-3 #mm
+SLM_PIXEL_LENGTH = 12.5e-6 #m
 
 DEFAULT_VOLTAGE_CALIBRATION = np.asarray([255/(2*np.pi),0])
 
@@ -21,16 +21,48 @@ def pol2cart(rho, phi):
     y = rho * np.sin(phi)
     return(x, y)
 
+def create_checkerboard(height = SLM_HEIGHT_PX, width = SLM_WIDTH_PX, square_size = 4, value_black=0, value_white=2*np.pi-1e-10):
+    """
+    Creates a checkerboard pattern with customizable square size.
+    
+    Parameters
+        :param height: Height of the output pattern in pixels (default: SLM_HEIGHT_PX)
+        :type height: int
+        :param width: Width of the output pattern in pixels (default: SLM_WIDTH_PX)
+        :type width: int
+        :param square_size: Size of each square in pixels (default: 4)
+        :type square_size: int
+        :param value_black: Value for black squares (default: 0)
+        :type value_black: float
+        :param value_white: Value for white squares (default: 2π)
+        :type value_white: float
+    
+    Returns
+        :return: 2D checkerboard pattern array
+        :rtype: np.ndarray
+    
+    Example
+        >>> cb = create_checkerboard(1024, 1280, 32)  # 32x32 pixel squares
+    """
+    checkerboard = np.zeros((height, width))
+    for i in range(height):
+        for j in range(width):
+            if ((i // square_size) + (j // square_size)) % 2 == 0:
+                checkerboard[i, j] = value_black
+            else:
+                checkerboard[i, j] = value_white
+    return checkerboard
+
 class Hologram:
     def __init__(self, widthPx = SLM_WIDTH_PX , heightPx = SLM_HEIGHT_PX, 
-                 pixelLengthMM = SLM_PIXEL_LENGTH):
+                 pixelLength = SLM_PIXEL_LENGTH):
         self.width = widthPx
         self.height = heightPx
-        self.pixelSize = pixelLengthMM
+        self.pixelSize = pixelLength
         self.x, self.y = np.meshgrid(np.arange(-np.floor(self.width/2),np.floor(self.width/2)),
             np.arange(-np.floor(self.height/2),np.floor(self.height/2)))
         self.rho, self.phi = cart2pol(self.x, self.y)
-        self.rho = self.rho*pixelLengthMM
+        self.rho = self.rho*pixelLength
         self.holoBase = np.zeros((self.height,self.width))
         self.holo = self.holoBase
         self.phaseCalibration = np.zeros((self.height,self.width))
@@ -101,9 +133,9 @@ class Hologram:
             :type deltaL: int         
             :param nSample: number of OAM modes
             :type nSample: uint        
-            :param rMin: minimum radius of the OAM zones
+            :param rMin: minimum radius [m] of the OAM zones
             :type rMin: float            
-            :param rMax: maximum radius of the OAM zones
+            :param rMax: maximum radius [m] of the OAM zones
             :type rMax: float
             
         """
@@ -238,9 +270,26 @@ class Hologram:
 
 
     def setHoloBase(self, mode = 0):
-        def makeCheck(size):
-            #implement
-            check = np.zeros((self.height,self.width))
+        def makeCheck(square_size):
+            """
+            Creates a checkerboard pattern with alternating squares.
+            
+            Parameters
+                :param square_size: Size of each square in pixels
+                :type square_size: int
+            
+            Returns
+                :return: 2D array with checkerboard pattern (0 and 2π alternating)
+                :rtype: np.ndarray
+            """
+            check = np.zeros((self.height, self.width))
+            for i in range(self.height):
+                for j in range(self.width):
+                    # Determine if this pixel belongs to a black or white square
+                    if ((i // square_size) + (j // square_size)) % 2 == 0:
+                        check[i, j] = 0
+                    else:
+                        check[i, j] = 2 * np.pi
             return check
         if mode == 0:
             self.holoBase = np.zeros((self.height,self.width))
