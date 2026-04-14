@@ -86,7 +86,7 @@ def extract_coefficients_phasix(path:Path, crop_radius=0.95, polinomial_order=4)
         :type polinomial_order: int
     """
     phase_file = PhaseFile.average_files_phasix(path, crop_radius)
-    phase_file.fitZernikesToFile(generate_polynomials(polinomial_order))
+    phase_file.fit_zernikes_to_file(generate_polynomials(polinomial_order))
     save_path = path.parent.parent / f"{path.parent}_coefficients"
     phase_file.save_zernike_coefficients(save_path)
     return phase_file.coefficients
