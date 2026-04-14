@@ -106,8 +106,9 @@ def load_zernike_coefficients_from_file(path:Path)-> tuple[list[float], list[Zer
         raise ValueError(f"File {path} does not have .zrnk extension.")
     
     def get_delimiter_from_header(header_line:str):
-        left = header_line.find("Polynomial Name")+len("Polynomial Name")
-        right = header_line.find("m")
+        pn = "Polynomial Name"
+        left = header_line.find(pn)+len(pn)
+        right = header_line.strip(pn).find("m")+len(pn)
         return header_line[left:right].strip()
     
     coefficients = []
