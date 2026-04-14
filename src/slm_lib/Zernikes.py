@@ -91,16 +91,23 @@ class PhaseFile:
     """
 
     def __init__(self, path: Path, delimiter=",", crop_radius=0.5, pixelpitch=DEFAULT_PIXELPITCH):
-        self.path = path
-        self.phase = np.loadtxt(path, delimiter=delimiter)
-        self.fileSize = self.phase.shape
-        self.minSize = min(self.fileSize)
-        self.crop_radius = crop_radius
         self.zernikes: list[ZernPol] | None = None
         self.coefficients: list[float] | None = None
         self.pixelpitch = None
-        self.set_pixelpitch(pixelpitch)
-        self.realworldNormalizationFactor = self._calcNormalizationFactor()
+        self.fileSize = None
+        self.minSize = None
+        self.realworldNormalizationFactor = None
+        self.path = path
+        if not self._isZernikeFile():
+            self.phase = np.loadtxt(path, delimiter=delimiter)
+            self.fileSize = self.phase.shape
+            self.minSize = min(self.fileSize)
+            self.crop_radius = crop_radius
+            self.set_pixelpitch(pixelpitch)
+            self.realworldNormalizationFactor = self._calcNormalizationFactor()
+        else:
+            self._loadZernikeCoefficientsFromFile()
+            
 
     def _setZernikes(self, zernikes: list[ZernPol]):
         self.zernikes = zernikes
@@ -128,16 +135,41 @@ class PhaseFile:
 
         r[r > 1] = np.nan
         return r, theta
-
-    @staticmethod
-    def calcNormalizationFactorStatic(pixelpitch, deviceRadiusPx, cropRadiusNormalized):
-        return deviceRadiusPx * cropRadiusNormalized * pixelpitch
+    
+    def _isZernikeFile(self):
+        return self.path.suffix == ".zrnk"
+    
+    def _loadZernikeCoefficientsFromFile(self):
+        def get_delimiter_from_header(header_line:str):
+            left = header_line.find("Polynomial Name")+len("Polynomial Name")
+            right = header_line.find("m")
+            return header_line[left:right].strip()
+        
+        coefficients = []
+        zernikes = []
+        realworldNormalizationFactor = None
+        with open(self.path, 'r') as f:
+            delimiter = get_delimiter_from_header(next(f))  # read header and determine delimiter
+            for line in f:
+                name, m_str, n_str, coef_str, realworldNormalizationFactor_str = line.strip().split(delimiter)
+                m = int(m_str)
+                n = int(n_str)
+                coef = float(coef_str)
+                realworldNormalizationFactor = float(realworldNormalizationFactor_str)
+                coefficients.append(coef)
+                zernikes.append(ZernPol(m, n))
+        self.coefficients = coefficients
+        self.zernikes = zernikes
+        self.realworldNormalizationFactor = realworldNormalizationFactor
 
     def _calcNormalizationFactor(self):
         if self.pixelpitch is None or self.crop_radius is None:
             return None
         return self.minSize / 2 * self.pixelpitch * self.crop_radius
+    ##############################################################################################
+    # Static methods
 
+    #   loading and averaging phase files
     @staticmethod
     def loadFile(path, delimiter=",", crop_radius=0.5, pixelpitch=DEFAULT_PIXELPITCH):
         """
@@ -152,22 +184,7 @@ class PhaseFile:
             :type pixelpitch: float
         """
         return PhaseFile(path, delimiter, crop_radius, pixelpitch)
-
-    def set_pixelpitch(self, pixelpitch):
-        self.pixelpitch = pixelpitch
-        self.realworldNormalizationFactor = self._calcNormalizationFactor()
-
-    def fitZernikesToFile(self, zernikes: list[ZernPol]):
-        self._setZernikes(zernikes)
-        fit = fit_polynomials(
-            self.phase,
-            self.zernikes,
-            crop_radius=self.crop_radius,
-            return_cropped_image=True,
-        )
-        self.coefficients = fit[0]
-        return fit
-
+    
     @staticmethod
     def average_files_phasix(folder:Path, crop_radius=0.5):
         """
@@ -197,12 +214,22 @@ class PhaseFile:
         avg_phase_file.realworldNormalizationFactor = avg_phase_file._calcNormalizationFactor()
         return avg_phase_file
         
-
+    #   polar mesh and Zernike evaluation
     @staticmethod
     def make_polar_mesh(shape, crop_radius=1.0, phase_offset = np.pi*3/2, crop_pupil=True):
         """
         Polar mesh on the target device, normalized to the target device pupil.
         r_dev_norm = 1 at the target pupil edge.
+
+            :param shape: Shape of the target device (height, width)
+            :type shape: tuple[int]
+            :param crop_radius: Normalized Crop radius for the target device pupil [0.5-1.0], defined as the beam radius normalized to the device physical radius. E.g. 0.9 means the beam radius is 90% of the device physical radius.
+            :type crop_radius: float
+            :param phase_offset: Phase offset for the polar mesh
+            :type phase_offset: float
+            :param crop_pupil: Whether to crop the pupil
+            :type crop_pupil: bool
+
         """
         print(f"Making device polar mesh with\nshape={shape}, crop_radius={crop_radius}, phase_offset={phase_offset}")
         # Calculate center of the input image - depending on its sizes
@@ -241,6 +268,90 @@ class PhaseFile:
             r[r > 1] = np.nan
             theta[r > 1] = np.nan
         return r, theta
+
+    @staticmethod
+    def evaluate_zernikes_on_mesh(coefficients: list[float], zernikes: list[ZernPol], r_mesh, theta_mesh):
+        """
+        Evaluate the Zernike sum on a given polar mesh.
+            :param coefficients: List of Zernike coefficients
+            :type coefficients: list[float]
+            :param zernikes: List of Zernike polynomials corresponding to the coefficients
+            :type zernikes: list[ZernPol]
+            :param r_mesh: Radial coordinates of the mesh
+            :type r_mesh: np.ndarray
+            :param theta_mesh: Angular coordinates of the mesh
+            :type theta_mesh: np.ndarray
+        """
+        if len(coefficients) != len(zernikes):
+            raise ValueError("Number of coefficients must match number of Zernikes.")
+        
+        total_phase = np.zeros_like(r_mesh)
+        for a, z in zip(coefficients, zernikes):
+            m, n = z.get_mn_orders()
+            total_phase += a * zernike_extended(m, n, r_mesh, theta_mesh)
+        return total_phase
+    
+    #   plotting
+    @staticmethod
+    def plot_phase_on_axes(ax:Axes, phase, title = "Phase", cmap="viridis", wrapped = True):
+        """
+        Utility function to plot a phase array on given axes with consistent color scaling and optional wrapping.
+            :param ax: Matplotlib axes to plot on
+            :type ax: Axes
+            :param phase: 2D array of phase values to plot
+            :type phase: np.ndarray
+            :param title: Title for the plot, default "Phase"
+            :type title: str
+            :param cmap: Colormap to use, default "viridis"
+            :type cmap: str
+            :param wrapped: Whether to wrap the phase values to [0, 2pi] for plotting, default True
+            :type wrapped: bool
+        """
+        if wrapped:
+            phase_to_plot = np.mod(phase, 2*np.pi)
+        else:
+            phase_to_plot = phase
+        c = ax.imshow(phase_to_plot, cmap=cmap, vmin=0 if wrapped else None, vmax=2*np.pi if wrapped else None)
+        ax.set_title(title)
+        plt.colorbar(c, ax=ax)
+
+    @staticmethod
+    def plot_coefficients_on_axes(ax:Axes, coefficients: list[float], zernikes: list[ZernPol], exclude_indeces: list[int] = []):
+        """ 
+        Utility function to plot Zernike coefficients as a bar chart on given axes, with labels and optional exclusion of certain indices.
+            :param ax: Matplotlib axes to plot on
+            :type ax: Axes
+            :param coefficients: List of Zernike coefficients to plot
+            :type coefficients: list[float]
+            :param zernikes: List of Zernike polynomials corresponding to the coefficients, used for labeling
+            :type zernikes: list[ZernPol]
+            :param exclude_indeces: List of indices of Zernike orders to exclude from the plot (e.g. piston, tip, tilt), default []
+            :type exclude_indeces: list[int]
+        """
+        name_labels = [f"{z.get_polynomial_name()} ({z.get_mn_orders()[0]}, {z.get_mn_orders()[1]})" 
+                       for i, z in enumerate(zernikes) if i not in exclude_indeces]
+        coefficients = [coef for i, coef in enumerate(coefficients) if i not in exclude_indeces]
+        ax.bar(name_labels, coefficients)
+        ax.set_title("Zernike Coefficients")
+        ax.set_ylabel("Coefficient Value")
+        plt.xticks(rotation=90)
+        fig.tight_layout()
+
+
+    def set_pixelpitch(self, pixelpitch):
+        self.pixelpitch = pixelpitch
+        self.realworldNormalizationFactor = self._calcNormalizationFactor()
+
+    def fitZernikesToFile(self, zernikes: list[ZernPol]):
+        self._setZernikes(zernikes)
+        fit = fit_polynomials(
+            self.phase,
+            self.zernikes,
+            crop_radius=self.crop_radius,
+            return_cropped_image=True,
+        )
+        self.coefficients = fit[0]
+        return fit
 
     def source_physical_radius(self):
         """
@@ -289,30 +400,6 @@ class PhaseFile:
             transformed_coeffs.append(transformed_a)   
         return transformed_coeffs
     
-    @staticmethod
-    def evaluate_zernikes_on_mesh(coefficients: list[float], zernikes: list[ZernPol], r_mesh, theta_mesh):
-        """
-        Evaluate the Zernike sum on a given polar mesh.
-        """
-        if len(coefficients) != len(zernikes):
-            raise ValueError("Number of coefficients must match number of Zernikes.")
-        
-        total_phase = np.zeros_like(r_mesh)
-        for a, z in zip(coefficients, zernikes):
-            m, n = z.get_mn_orders()
-            total_phase += a * zernike_extended(m, n, r_mesh, theta_mesh)
-        return total_phase
-    
-    @staticmethod
-    def plot_phase_on_axes(ax:Axes, phase, title = "Phase", cmap="viridis", wrapped = True):
-        if wrapped:
-            phase_to_plot = np.mod(phase, 2*np.pi)
-        else:
-            phase_to_plot = phase
-        c = ax.imshow(phase_to_plot, cmap=cmap, vmin=0 if wrapped else None, vmax=2*np.pi if wrapped else None)
-        ax.set_title(title)
-        plt.colorbar(c, ax=ax)
-
     def show_phase(self, title = "Phase", cmap="viridis", wrapped = True):
         fig, ax = plt.subplots(figsize=(6,6))
         self.plot_phase_on_axes(ax, self.phase, title, cmap, wrapped)
@@ -328,8 +415,8 @@ class PhaseFile:
             m, n = z.get_mn_orders()
             mode_phase = zernike_extended(m, n, *self._createNormPolarMesh())*self.coefficients[self.zernikes.index(z)]
             self.plot_phase_on_axes(ax, mode_phase, title=f"{z.get_polynomial_name()}\nZernike m={m}, n={n}", cmap=cmap, wrapped=False)
-        plt.tight_layout()
-        plt.show()
+        fig.tight_layout()
+        fig.show()
         return fig
     
     def plot_coefficients(self, exclude_indeces = []):
@@ -337,18 +424,8 @@ class PhaseFile:
             raise ValueError("No coefficients to plot. Fit the Zernikes first.")
         
         fig, ax = plt.subplots(figsize=(8,4))
-        m_n_labels = [f"m={z.get_mn_orders()[0]}, n={z.get_mn_orders()[1]}" for z in self.zernikes]
-        name_labels = [z.get_polynomial_name() for z in self.zernikes]
-        # Exclude specified indices
-        m_n_labels = [label for i, label in enumerate(m_n_labels) if i not in exclude_indeces]
-        name_labels = [label for i, label in enumerate(name_labels) if i not in exclude_indeces]
-        coefficients = [coef for i, coef in enumerate(self.coefficients) if i not in exclude_indeces]
-        ax.bar(name_labels, coefficients)
-        ax.set_title("Zernike Coefficients")
-        ax.set_ylabel("Coefficient Value")
-        plt.xticks(rotation=90)
-        plt.tight_layout()
-        plt.show()
+        self.plot_coefficients_on_axes(ax, self.coefficients, self.zernikes, exclude_indeces)
+        fig.show()
         return fig
 
     def make_SLM_phase_pattern(self, deviceCropRadius, devicePixelpitch=SLM_PIXEL_LENGTH, shape = (SLM_HEIGHT_PX, SLM_WIDTH_PX), checkerboard = None, wrapped = True, invertCoefficients = False):
@@ -389,6 +466,26 @@ class PhaseFile:
         if wrapped:
             beam = np.mod(beam, 2*np.pi)
         return np.where(np.isnan(beam), background_pattern, beam)
+
+    def save_zernike_coefficients(self, save_path: Path, delimiter=","):
+        """
+        Save the fitted Zernike coefficients to a CSV file.
+            :param save_path: Path to save the coefficients CSV file
+            :type save_path: Path
+            :param delimiter: Delimiter to use in the CSV file, default ","
+            :type delimiter: str
+        """
+        save_path = save_path.with_suffix(".zrnk")
+        if self.coefficients is None or self.zernikes is None:
+            raise ValueError("Fit the Zernikes first.")
+        
+        with open(save_path, 'w') as f:
+            f.write(f"Polynomial Name{delimiter}m{delimiter}n{delimiter}Coefficient{delimiter}Realworld Normalization Factor\n")
+            for z, coef in zip(self.zernikes, self.coefficients):
+                m, n = z.get_mn_orders()
+                name = z.get_polynomial_name()
+                f.write(f"{name}{delimiter}{m}{delimiter}{n}{delimiter}{coef}{delimiter}{self.realworldNormalizationFactor}\n")
+        print(f"Zernike coefficients saved to {save_path}")
     
 if __name__ == "__main__":
     crop_radius = 0.55
