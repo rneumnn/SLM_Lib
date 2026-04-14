@@ -72,7 +72,98 @@ def zernike_extended(m: int, n: int, r, theta):
         return R * np.cos(m * theta)
     else:
         return R * np.sin(abs(m) * theta)
+    
+# Convenience function to handle and analyse files from a folder of phase files
 
+def extract_coefficients_phasix(path:Path, crop_radius=0.95, polinomial_order=4):
+    """
+    Convenience function to load phase files from a folder based on the phasix-WFS structure, average them, fit Zernikes, and save the coefficients to a file.
+        :param path: Path to the folder containing the phase files (expects files named "PHA*.csv")
+        :type path: Path
+        :param crop_radius: Crop radius for the pupil in the source image, defined as the beam radius normalized to the image radius. E.g. 0.9 means the beam radius is 90% of the image radius. Default is 0.95.
+        :type crop_radius: float
+        :param polinomial_order: Maximum radial order of Zernike polynomials to fit. Default is 4.
+        :type polinomial_order: int
+    """
+    phase_file = PhaseFile.average_files_phasix(path, crop_radius)
+    phase_file.fitZernikesToFile(generate_polynomials(polinomial_order))
+    save_path = path.parent.parent / f"{path.parent}_coefficients"
+    phase_file.save_zernike_coefficients(save_path)
+    return phase_file.coefficients
+
+def load_zernike_coefficients_from_file(path:Path)-> tuple[list[float], list[ZernPol], float]:
+    """Load Zernike coefficients and corresponding polynomials from a .zrnk file.
+        :param path: Path to the .zrnk file containing Zernike coefficients and polynomial information
+        :type path: Path
+        :return: Tuple containing the list of coefficients, list of corresponding ZernPol objects, and the real-world normalization factor
+        :rtype: tuple[list[float], list[ZernPol], float]
+    """
+    if not path.exists():
+        raise ValueError(f"File {path} does not exist.")
+    if not path.is_file():
+        raise ValueError(f"Path {path} is not a file.")
+    if not path.suffix == ".zrnk":
+        raise ValueError(f"File {path} does not have .zrnk extension.")
+    
+    def get_delimiter_from_header(header_line:str):
+        left = header_line.find("Polynomial Name")+len("Polynomial Name")
+        right = header_line.find("m")
+        return header_line[left:right].strip()
+    
+    coefficients = []
+    zernikes = []
+    realworldNormalizationFactor = None
+    with open(path, 'r') as f:
+        delimiter = get_delimiter_from_header(next(f))  # read header and determine delimiter
+        for line in f:
+            name, m_str, n_str, coef_str, realworldNormalizationFactor_str = line.strip().split(delimiter)
+            m = int(m_str)
+            n = int(n_str)
+            coef = float(coef_str)
+            realworldNormalizationFactor = float(realworldNormalizationFactor_str)
+            coefficients.append(coef)
+            zernikes.append(ZernPol(m, n))
+    return coefficients, zernikes, realworldNormalizationFactor
+
+def compare_zernikes(measured_zernikes: list[ZernPol], reference_zernikes: list[ZernPol])->tuple[list[int], list[int], list[tuple[int, int]]]:
+    """
+    Compare measured and reference Zernike polynomials, returns the indices of the same polynomials in both lists and their corresponding (m, n) orders.
+        :param measured_zernikes: List of measured Zernike polynomials.
+        :type measured_zernikes: list[ZernPol]
+        :param reference_zernikes: List of reference Zernike polynomials.
+        :type reference_zernikes: list[ZernPol]
+        :return: List of indices of same polynomials.
+        :rtype: tuple[list[int], list[int], list[tuple[int, int]]]
+    """
+    if len(measured_zernikes) != len(reference_zernikes):
+        print("Warning: Measured and reference Zernike lists dont have the same length.")
+
+    ref_zernike_indices = [z.get_mn_orders() for z in reference_zernikes]
+    measured_zernike_indices = [z.get_mn_orders() for z in measured_zernikes]
+    ref = []
+    measured = []
+    index = []
+    for m in measured_zernike_indices:
+        if m in ref_zernike_indices:
+            ref.append(ref_zernike_indices.index(m))
+            measured.append(measured_zernike_indices.index(ref_zernike_indices.index(m)))
+            index.append(m)
+    return ref, measured, index
+
+def subtract_coefficients(measured_coeffs: list[float], reference_coeffs: list[float])->tuple[np.ndarray, list[tuple[int, int]]]:
+    """
+    Subtract reference Zernike coefficients from measured coefficients to isolate the aberrations of interest.
+        :param measured_coeffs: List of Zernike coefficients obtained from the measurement.
+        :type measured_coeffs: list[float]
+        :param reference_coeffs: List of Zernike coefficients representing the reference or baseline aberrations to subtract.
+        :type reference_coeffs: list[float]
+        :return: List of Zernike coefficients after subtraction, and the corresponding (m, n) orders of the Zernike polynomials that were compared.
+        :rtype: tuple[np.ndarray, list[tuple[int, int]]]
+    """
+    ref_ind, meas_ind, zern_indices = compare_zernikes(measured_coeffs, reference_coeffs)
+    measured_coeffs = np.asarray(measured_coeffs)[np.asarray(meas_ind)]
+    reference_coeffs = np.asarray(reference_coeffs)[np.asarray(ref_ind)]
+    return measured_coeffs - reference_coeffs, zern_indices
 
 class PhaseFile:
     """
@@ -107,7 +198,6 @@ class PhaseFile:
             self.realworldNormalizationFactor = self._calcNormalizationFactor()
         else:
             self._loadZernikeCoefficientsFromFile()
-            
 
     def _setZernikes(self, zernikes: list[ZernPol]):
         self.zernikes = zernikes
@@ -171,7 +261,7 @@ class PhaseFile:
 
     #   loading and averaging phase files
     @staticmethod
-    def loadFile(path, delimiter=",", crop_radius=0.5, pixelpitch=DEFAULT_PIXELPITCH):
+    def load_file(path, delimiter=",", crop_radius=0.5, pixelpitch=DEFAULT_PIXELPITCH):
         """
         Based on numpy loadtxt, but returns a PhaseFile object with the loaded phase data and parameters set.
             :param path: Path to the file containing phase data
@@ -335,14 +425,14 @@ class PhaseFile:
         ax.set_title("Zernike Coefficients")
         ax.set_ylabel("Coefficient Value")
         plt.xticks(rotation=90)
-        fig.tight_layout()
+        plt.tight_layout()
 
 
     def set_pixelpitch(self, pixelpitch):
         self.pixelpitch = pixelpitch
         self.realworldNormalizationFactor = self._calcNormalizationFactor()
 
-    def fitZernikesToFile(self, zernikes: list[ZernPol]):
+    def fit_zernikes_to_file(self, zernikes: list[ZernPol]):
         self._setZernikes(zernikes)
         fit = fit_polynomials(
             self.phase,
