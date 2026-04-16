@@ -6,6 +6,7 @@ from pathlib import Path
 from matplotlib import pyplot as plt
 from matplotlib.axes import Axes
 from slm_lib.Hologram import SLM_WIDTH_PX, SLM_HEIGHT_PX, SLM_PIXEL_LENGTH, create_checkerboard
+from copy import deepcopy
 
 DEFAULT_PIXELPITCH = 29.6e-6  # [m] default pixel pitch for the source WFS, used for real-world normalization if not set otherwise
 
@@ -73,6 +74,9 @@ def zernike_extended(m: int, n: int, r, theta):
     else:
         return R * np.sin(abs(m) * theta)
     
+def device_physical_radius(devicePixelpitch, deviceRadiusPx, deviceCropRadius):
+        return devicePixelpitch *deviceRadiusPx * deviceCropRadius
+    
 # Convenience function to handle and analyse files from a folder of phase files
 
 def extract_coefficients_phasix(path:Path, crop_radius=0.95, polinomial_order=4):
@@ -128,6 +132,28 @@ def load_zernike_coefficients_from_file(path:Path)-> tuple[list[float], list[Zer
             zernikes.append(ZernPol(m=m, n=n))
     return coefficients, zernikes, realworldNormalizationFactor
 
+def scale_zernike_coefficients_raw(coefficients: list[float], zernikes: list[ZernPol], scaleFactor: float)->list[float]:
+        """
+        Static version of transform_pupil_size to scale Zernike coefficients for a different circular(!) pupil size.
+            :param coefficients: List of Zernike coefficients to scale
+            :type coefficients: list[float]
+            :param zernikes: List of ZernPol objects corresponding to the coefficients, used to determine the radial order for scaling
+            :type zernikes: list[ZernPol]
+            :param scaleFactor: The factor by which to scale the pupil radius (e.g. R_dev / R_fit)
+            :type scaleFactor: float
+            :return: A new list of Zernike coefficients corresponding to the scaled pupil size.
+            :rtype: list[float]
+        """
+        if len(coefficients) != len(zernikes):
+            raise ValueError("Number of coefficients must match number of Zernikes.")
+        
+        transformed_coeffs = []
+        for a, z in zip(coefficients, zernikes):
+            m, n = z.get_mn_orders()
+            transformed_a = a * (scaleFactor ** n)
+            transformed_coeffs.append(transformed_a)
+        return transformed_coeffs
+
 def normalize_zernike_coefficients_raw(coeffs: list[float], zernikes: list[ZernPol], normalization_factor: float)->list[float]:
     """
     Normalize Zernike coefficients by scaling them according to the radial order of the corresponding Zernike polynomials and a given normalization factor. 
@@ -140,107 +166,179 @@ def normalize_zernike_coefficients_raw(coeffs: list[float], zernikes: list[ZernP
         :param normalization_factor: The factor by which to normalize the coefficients, typically the individual real-world normalization factor for the source measurement.
         :type normalization_factor: float
     """
-    return PhaseFile.scale_zernike_coefficients(coeffs, zernikes, 1/normalization_factor)
+    return scale_zernike_coefficients_raw(coeffs, zernikes, 1/normalization_factor)
 
+class ZernikeAnalysisUtils:
+    """
+    static utility functions for comparing and subtracting Zernike coefficients and polynomials from different measurements, without the need to create PhaseFile objects. These functions operate on raw lists of coefficients and ZernPol objects, along with the necessary normalization factors, to perform the desired comparisons and transformations. This allows for more flexible analysis of Zernike data without being tied to the PhaseFile class structure.
+    """
 
-def compare_zernikes_raw(measured_zernikes: list[ZernPol], reference_zernikes: list[ZernPol])->tuple[list[int], list[int], list[tuple[int, int]]]:
-    """
-    Compare measured and reference Zernike polynomials, returns the indices of the same polynomials in both lists and their corresponding (m, n) orders.
-        :param measured_zernikes: List of measured Zernike polynomials.
-        :type measured_zernikes: list[ZernPol]
-        :param reference_zernikes: List of reference Zernike polynomials.
-        :type reference_zernikes: list[ZernPol]
-        :return: List of indices of same polynomials.
-        :rtype: tuple[list[int], list[int], list[tuple[int, int]]]
-    """
-    if len(measured_zernikes) != len(reference_zernikes):
-        print("Warning: Measured and reference Zernike lists dont have the same length.")
+    @staticmethod
+    def compare_zernikes_raw(measured_zernikes: list[ZernPol], reference_zernikes: list[ZernPol])->tuple[list[int], list[int], list[tuple[int, int]]]:
+        """
+        Compare measured and reference Zernike polynomials, returns the indices of the same polynomials in both lists and their corresponding (m, n) orders.
+            :param measured_zernikes: List of measured Zernike polynomials.
+            :type measured_zernikes: list[ZernPol]
+            :param reference_zernikes: List of reference Zernike polynomials.
+            :type reference_zernikes: list[ZernPol]
+            :return: List of indices of same polynomials.
+            :rtype: tuple[list[int], list[int], list[tuple[int, int]]]
+        """
+        if len(measured_zernikes) != len(reference_zernikes):
+            print("Warning: Measured and reference Zernike lists dont have the same length.")
 
-    ref_zernike_indices = [z.get_mn_orders() for z in reference_zernikes]
-    measured_zernike_indices = [z.get_mn_orders() for z in measured_zernikes]
-    ref = []
-    measured = []
-    index = []
-    for m in measured_zernike_indices:
-        if m in ref_zernike_indices:
-            ref.append(ref_zernike_indices.index(m))
-            measured.append(measured_zernike_indices.index(ref_zernike_indices.index(m)))
-            index.append(m)
-    return ref, measured, index
+        ref_zernike_indices = [z.get_mn_orders() for z in reference_zernikes]
+        measured_zernike_indices = [z.get_mn_orders() for z in measured_zernikes]
+        ref = []
+        measured = []
+        index = []
+        for m in measured_zernike_indices:
+            if m in ref_zernike_indices:
+                ref.append(ref_zernike_indices.index(m))
+                measured.append(measured_zernike_indices.index(m))
+                index.append(m)
+        return ref, measured, index
 
-def subtract_coefficients_raw(measured_coeffs: list[float], measured_zernikes: list[ZernPol], reference_coeffs: list[float], reference_zernikes: list[ZernPol], measured_normalization_factor: float = 1, reference_normalization_factor: float = 1)->tuple[np.ndarray, list[tuple[int, int]]]:
-    """
-    Subtract reference Zernike coefficients from measured coefficients to isolate the aberrations of interest.
-        :param measured_coeffs: List of Zernike coefficients obtained from the measurement.
-        :type measured_coeffs: list[float]
-        :param measured_zernikes: List of Zernike polynomials corresponding to the measured coefficients.
-        :type measured_zernikes: list[ZernPol]
-        :param reference_coeffs: List of Zernike coefficients representing the reference or baseline aberrations to subtract.
-        :type reference_coeffs: list[float]
-        :param reference_zernikes: List of Zernike polynomials corresponding to the reference coefficients.
-        :type reference_zernikes: list[ZernPol]
-        :param measured_normalization_factor: The factor by which to normalize the measured coefficients.
-        :type measured_normalization_factor: float
-        :param reference_normalization_factor: The factor by which to normalize the reference coefficients.
-        :type reference_normalization_factor: float
-        :return: List of Zernike coefficients after subtraction, and the corresponding (m, n) orders of the Zernike polynomials that were compared.
-        :rtype: tuple[np.ndarray, list[tuple[int, int]]]
-    """
-    if reference_normalization_factor == 1 and measured_normalization_factor == 1:
-        print("Warning: No normalization applied to coefficients. Make sure the coefficients are on the same scale before subtraction.")
+    @staticmethod
+    def subtract_coefficients_raw(measured_coeffs: list[float], measured_zernikes: list[ZernPol], reference_coeffs: list[float], reference_zernikes: list[ZernPol], measured_normalization_factor: float = 1, reference_normalization_factor: float = 1)->tuple[np.ndarray, list[tuple[int, int]]]:
+        """
+        Subtract reference Zernike coefficients from measured coefficients to isolate the aberrations of interest.
+            :param measured_coeffs: List of Zernike coefficients obtained from the measurement.
+            :type measured_coeffs: list[float]
+            :param measured_zernikes: List of Zernike polynomials corresponding to the measured coefficients.
+            :type measured_zernikes: list[ZernPol]
+            :param reference_coeffs: List of Zernike coefficients representing the reference or baseline aberrations to subtract.
+            :type reference_coeffs: list[float]
+            :param reference_zernikes: List of Zernike polynomials corresponding to the reference coefficients.
+            :type reference_zernikes: list[ZernPol]
+            :param measured_normalization_factor: The factor by which to normalize the measured coefficients.
+            :type measured_normalization_factor: float
+            :param reference_normalization_factor: The factor by which to normalize the reference coefficients.
+            :type reference_normalization_factor: float
+            :return: List of Zernike coefficients after subtraction, and the corresponding (m, n) orders of the Zernike polynomials that were compared.
+            :rtype: tuple[np.ndarray, list[tuple[int, int]]]
+        """
+        if reference_normalization_factor == 1 and measured_normalization_factor == 1:
+            print("Warning: No normalization applied to coefficients. Make sure the coefficients are on the same scale before subtraction.")
 
-    ref_ind, meas_ind, zern_indices = compare_zernikes_raw(measured_zernikes, reference_zernikes)
-    measured_coeffs = normalize_zernike_coefficients_raw(measured_coeffs, measured_zernikes, measured_normalization_factor)
-    reference_coeffs = normalize_zernike_coefficients_raw(reference_coeffs, reference_zernikes, reference_normalization_factor)
-    measured_coeffs = np.asarray(measured_coeffs)[np.asarray(meas_ind)]
-    reference_coeffs = np.asarray(reference_coeffs)[np.asarray(ref_ind)]
-    return measured_coeffs - reference_coeffs, zern_indices
+        ref_ind, meas_ind, zern_indices = ZernikeAnalysisUtils.compare_zernikes_raw(measured_zernikes, reference_zernikes)
+        measured_coeffs = normalize_zernike_coefficients_raw(measured_coeffs, measured_zernikes, measured_normalization_factor)
+        reference_coeffs = normalize_zernike_coefficients_raw(reference_coeffs, reference_zernikes, reference_normalization_factor)
+        measured_coeffs = np.asarray(measured_coeffs)[np.asarray(meas_ind)]
+        reference_coeffs = np.asarray(reference_coeffs)[np.asarray(ref_ind)]
+        return measured_coeffs - reference_coeffs, zern_indices
 
-def compare_zernikes(measured: PhaseFile, reference: PhaseFile)->tuple[np.ndarray, list[tuple[int, int]]]:
-    """
-    Compare measured and reference Zernike coefficients from two PhaseFile objects, returns the coefficients for the same polynomials and their corresponding (m, n) orders.
-        :param measured: PhaseFile object containing the measured Zernike coefficients and polynomials.
-        :type measured: PhaseFile
-        :param reference: PhaseFile object containing the reference Zernike coefficients and polynomials.
-        :type reference: PhaseFile
-        :return: List of Zernike coefficients after subtraction, and the corresponding (m, n) orders of the Zernike polynomials that were compared.
-        :rtype: tuple[np.ndarray, list[tuple[int, int]]]
-    """
-    if not measured._hasZernikCoefficients():
-        raise ValueError("Measured PhaseFile does not have coefficients or Zernikes.")
-    if not reference._hasZernikCoefficients():
-        raise ValueError("Reference PhaseFile does not have coefficients or Zernikes.")
-    
-    new = compare_zernikes_raw(
-        measured.zernikes,
-        reference.zernikes
-    )
-    return PhaseFile._fromZernikes(new[0], new[1], None)  # create an uninitialized instance
+    @staticmethod
+    def compare_zernikes(measured: PhaseFile, reference: PhaseFile)->tuple[np.ndarray, list[tuple[int, int]]]:
+        """
+        Compare measured and reference Zernike coefficients from two PhaseFile objects, returns the coefficients for the same polynomials and their corresponding (m, n) orders.
+            :param measured: PhaseFile object containing the measured Zernike coefficients and polynomials.
+            :type measured: PhaseFile
+            :param reference: PhaseFile object containing the reference Zernike coefficients and polynomials.
+            :type reference: PhaseFile
+            :return: List of Zernike coefficients after subtraction, and the corresponding (m, n) orders of the Zernike polynomials that were compared.
+            :rtype: tuple[np.ndarray, list[tuple[int, int]]]
+        """
+        if not measured._hasZernikCoefficients():
+            raise ValueError("Measured PhaseFile does not have coefficients or Zernikes.")
+        if not reference._hasZernikCoefficients():
+            raise ValueError("Reference PhaseFile does not have coefficients or Zernikes.")
+        
+        new = ZernikeAnalysisUtils.compare_zernikes_raw(
+            measured.zernikes,
+            reference.zernikes
+        )
+        return PhaseFile._fromZernikes(new[0], new[1], None)  # create an uninitialized instance
 
-def subtract_zernikes(measured: PhaseFile, reference: PhaseFile)->tuple[np.ndarray, list[tuple[int, int]]]:
-    """
-    Subtract measured and reference Zernike coefficients from two PhaseFile objects, returns the difference of the coefficients for the same polynomials and their corresponding (m, n) orders.
-        :param measured: PhaseFile object containing the measured Zernike coefficients and polynomials.
-        :type measured: PhaseFile
-        :param reference: PhaseFile object containing the reference Zernike coefficients and polynomials.
-        :type reference: PhaseFile
-        :return: List of Zernike coefficients after subtraction, and the corresponding (m, n) orders of the Zernike polynomials that were compared.
-        :rtype: tuple[np.ndarray, list[tuple[int, int]]]
-    """
-    if not measured._hasZernikCoefficients():
-        raise ValueError("Measured PhaseFile does not have coefficients or Zernikes.")
-    if not reference._hasZernikCoefficients():
-        raise ValueError("Reference PhaseFile does not have coefficients or Zernikes.")
-    
-    new = subtract_coefficients_raw(
-        measured.coefficients,
-        measured.zernikes,
-        reference.coefficients,
-        reference.zernikes,
-        measured.realworldNormalizationFactor,
-        reference.realworldNormalizationFactor
-    )
-    return PhaseFile._fromZernikes(new[0], new[1], 1)  # create an uninitialized instance
+    @staticmethod
+    def subtract_zernikes(measured: PhaseFile, reference: PhaseFile, basis:str = "None")->PhaseFile:
+        """
+        Subtract measured and reference Zernike coefficients from two PhaseFile objects, returns the difference of the coefficients for the same polynomials and their corresponding (m, n) orders.
+            :param measured: PhaseFile object containing the measured Zernike coefficients and polynomials.
+            :type measured: PhaseFile
+            :param reference: PhaseFile object containing the reference Zernike coefficients and polynomials.
+            :type reference: PhaseFile
+            :param basis: "None" (Default), "measured", or "reference". Determines the basis for the resulting coefficients. "None" means both are normalized and the coefficients are returned on to global scale. "measured" means the resulting coefficients are normalized to the measured coefficients' normalization factor, and "reference" means they are normalized to the reference coefficients' normalization factor. This is important for ensuring that the resulting coefficients are on a meaningful scale for comparison or further analysis.
+            :return: PhaseFile object containing the difference of Zernike coefficients for the same polynomials, and the corresponding (m, n) orders of the Zernike polynomials that were compared. The real-world normalization factor is set to 1, indicating that the coefficients are normalized to a common physical scale.
+            :rtype: PhaseFile
+        """
+        if not measured._hasZernikCoefficients():
+            raise ValueError("Measured PhaseFile does not have coefficients or Zernikes.")
+        if not reference._hasZernikCoefficients():
+            raise ValueError("Reference PhaseFile does not have coefficients or Zernikes.")
+        if not basis in ["None", "measured", "reference"]:
+            raise ValueError("Basis must be 'None', 'measured', or 'reference'.")
+        
+        new = ZernikeAnalysisUtils.subtract_coefficients_raw(
+            measured.coefficients,
+            measured.zernikes,
+            reference.coefficients,
+            reference.zernikes,
+            measured.realworldNormalizationFactor,
+            reference.realworldNormalizationFactor
+        )
+        new[0]
+        zernike_list = [ZernPol(m=m, n=n) for m, n in new[1]]
+        if basis == "measured":
+            return PhaseFile._fromZernikes(new[0], zernike_list, 1, f"{measured.path.stem} - {reference.path.stem}.zrnk").scale_zernike_coefficients(measured.realworldNormalizationFactor)  # create an uninitialized instance 
+        elif basis == "reference":
+            return PhaseFile._fromZernikes(new[0], zernike_list, 1, f"{measured.path.stem} - {reference.path.stem}.zrnk").scale_zernike_coefficients(reference.realworldNormalizationFactor)  # create an uninitialized instance
+        
+        return PhaseFile._fromZernikes(new[0], zernike_list, 1, f"{measured.path.stem} - {reference.path.stem}.zrnk")  # create an uninitialized instance
+
+#   plotting
+class PlottingUtils:
+    @staticmethod
+    def plot_phase_on_axes(ax:Axes, phase, title = "Phase", cmap="viridis", wrapped = True):
+        """
+        Utility function to plot a phase array on given axes with consistent color scaling and optional wrapping.
+            :param ax: Matplotlib axes to plot on
+            :type ax: Axes
+            :param phase: 2D array of phase values to plot
+            :type phase: np.ndarray
+            :param title: Title for the plot, default "Phase"
+            :type title: str
+            :param cmap: Colormap to use, default "viridis"
+            :type cmap: str
+            :param wrapped: Whether to wrap the phase values to [0, 2pi] for plotting, default True
+            :type wrapped: bool
+        """
+        if wrapped:
+            phase_to_plot = np.mod(phase, 2*np.pi)
+        else:
+            phase_to_plot = phase
+        c = ax.imshow(phase_to_plot, cmap=cmap, vmin=0 if wrapped else None, vmax=2*np.pi if wrapped else None)
+        ax.set_title(title)
+        plt.colorbar(c, ax=ax)
+
+    @staticmethod
+    def plot_coefficients_on_axes(ax:Axes, coefficients: list[float], zernikes: list[ZernPol], exclude_indices: list[int] = [], title: str = "Zernike Coefficients", names = True):
+        """ 
+        Utility function to plot Zernike coefficients as a bar chart on given axes, with labels and optional exclusion of certain indices.
+            :param ax: Matplotlib axes to plot on
+            :type ax: Axes
+            :param coefficients: List of Zernike coefficients to plot
+            :type coefficients: list[float]
+            :param zernikes: List of Zernike polynomials corresponding to the coefficients, used for labeling
+            :type zernikes: list[ZernPol]
+            :param exclude_indices: List of indices of Zernike orders to exclude from the plot (e.g. piston, tip, tilt), default []
+            :type exclude_indices: list[int]
+            :param names: Whether to include polynomial names in the labels, default True
+            :type names: bool
+        """
+        if names:
+            name_labels = [f"{z.get_polynomial_name()} ({z.get_mn_orders()[0]}, {z.get_mn_orders()[1]})" 
+                            for i, z in enumerate(zernikes) if i not in exclude_indices]
+        else:
+            name_labels = [f"({z.get_mn_orders()[0]}, {z.get_mn_orders()[1]})" 
+                           for i, z in enumerate(zernikes) if i not in exclude_indices]
+        coefficients = [coef for i, coef in enumerate(coefficients) if i not in exclude_indices]
+        ax.bar(name_labels, coefficients)
+        ax.set_title(title)
+        ax.set_ylabel("Coefficient Value")
+        ax.tick_params(axis='x', labelrotation=90)
+        plt.tight_layout()
+
 class PhaseFile:
     """
     Load phase data and fit/evaluate Zernikes.
@@ -265,6 +363,7 @@ class PhaseFile:
         self.minSize = None
         self.realworldNormalizationFactor = None
         self.path = path
+        self.crop_radius = None
         if not self._isZernikeFile():
             self.phase = np.loadtxt(path, delimiter=delimiter)
             self.fileSize = self.phase.shape
@@ -307,10 +406,11 @@ class PhaseFile:
     
     def _loadZernikeCoefficientsFromFile(self):
         def get_delimiter_from_header(header_line:str):
-            left = header_line.find("Polynomial Name")+len("Polynomial Name")
-            right = header_line.find("m")
+            pn = "Polynomial Name"
+            left = header_line.find(pn)+len(pn)
+            right = header_line.strip(pn).find("m")+len(pn)
             return header_line[left:right].strip()
-        
+            
         coefficients = []
         zernikes = []
         realworldNormalizationFactor = None
@@ -323,12 +423,13 @@ class PhaseFile:
                 coef = float(coef_str)
                 realworldNormalizationFactor = float(realworldNormalizationFactor_str)
                 coefficients.append(coef)
-                zernikes.append(ZernPol(m, n))
+                zernikes.append(ZernPol(m=m, n=n))
         self.coefficients = coefficients
         self.zernikes = zernikes
         self.realworldNormalizationFactor = realworldNormalizationFactor
 
     def _calcNormalizationFactor(self):
+        #in m, corresponds to the physical radius of the fitted pupil in the source image, used for normalizing coefficients to a common physical scale
         if self.pixelpitch is None or self.crop_radius is None:
             return None
         return self.minSize / 2 * self.pixelpitch * self.crop_radius
@@ -338,7 +439,7 @@ class PhaseFile:
     ##############################################################################################
     # Static methods
     @staticmethod
-    def _fromZernikes(coefficients: list[float], zernikes: list[ZernPol], normalization_factor:float):
+    def _fromZernikes(coefficients: list[float], zernikes: list[ZernPol], normalization_factor:float, filename: str = "None.zrnk") -> "PhaseFile":
         """
         Create a PhaseFile object from given Zernike coefficients and polynomials, along with the necessary parameters to define the normalization factor.
             :param coefficients: List of Zernike coefficients
@@ -359,7 +460,7 @@ class PhaseFile:
         p.fileSize = None
         p.minSize = None
         p.realworldNormalizationFactor = normalization_factor
-        p.path = Path("None.zrnk")
+        p.path = Path(filename).with_suffix(".zrnk")
         return p
 
     #   loading and averaging phase files
@@ -483,53 +584,6 @@ class PhaseFile:
             m, n = z.get_mn_orders()
             total_phase += a * zernike_extended(m, n, r_mesh, theta_mesh)
         return total_phase
-    
-    #   plotting
-    @staticmethod
-    def plot_phase_on_axes(ax:Axes, phase, title = "Phase", cmap="viridis", wrapped = True):
-        """
-        Utility function to plot a phase array on given axes with consistent color scaling and optional wrapping.
-            :param ax: Matplotlib axes to plot on
-            :type ax: Axes
-            :param phase: 2D array of phase values to plot
-            :type phase: np.ndarray
-            :param title: Title for the plot, default "Phase"
-            :type title: str
-            :param cmap: Colormap to use, default "viridis"
-            :type cmap: str
-            :param wrapped: Whether to wrap the phase values to [0, 2pi] for plotting, default True
-            :type wrapped: bool
-        """
-        if wrapped:
-            phase_to_plot = np.mod(phase, 2*np.pi)
-        else:
-            phase_to_plot = phase
-        c = ax.imshow(phase_to_plot, cmap=cmap, vmin=0 if wrapped else None, vmax=2*np.pi if wrapped else None)
-        ax.set_title(title)
-        plt.colorbar(c, ax=ax)
-
-    @staticmethod
-    def plot_coefficients_on_axes(ax:Axes, coefficients: list[float], zernikes: list[ZernPol], exclude_indeces: list[int] = []):
-        """ 
-        Utility function to plot Zernike coefficients as a bar chart on given axes, with labels and optional exclusion of certain indices.
-            :param ax: Matplotlib axes to plot on
-            :type ax: Axes
-            :param coefficients: List of Zernike coefficients to plot
-            :type coefficients: list[float]
-            :param zernikes: List of Zernike polynomials corresponding to the coefficients, used for labeling
-            :type zernikes: list[ZernPol]
-            :param exclude_indeces: List of indices of Zernike orders to exclude from the plot (e.g. piston, tip, tilt), default []
-            :type exclude_indeces: list[int]
-        """
-        name_labels = [f"{z.get_polynomial_name()} ({z.get_mn_orders()[0]}, {z.get_mn_orders()[1]})" 
-                       for i, z in enumerate(zernikes) if i not in exclude_indeces]
-        coefficients = [coef for i, coef in enumerate(coefficients) if i not in exclude_indeces]
-        ax.bar(name_labels, coefficients)
-        ax.set_title("Zernike Coefficients")
-        ax.set_ylabel("Coefficient Value")
-        plt.xticks(rotation=90)
-        plt.tight_layout()
-
 
     def set_pixelpitch(self, pixelpitch):
         self.pixelpitch = pixelpitch
@@ -553,21 +607,14 @@ class PhaseFile:
         if self.realworldNormalizationFactor is None:
             raise ValueError("Need both pixelpitch and crop_radius to define source physical radius.")
         return self.realworldNormalizationFactor
-
-    def device_physical_radius(self, devicePixelpitch, deviceRadiusPx, deviceCropRadius):
-        return self.calcNormalizationFactorStatic(
-            devicePixelpitch,
-            deviceRadiusPx,
-            deviceCropRadius,
-        )
-
+        
     def get_scale_factor_to_device(self, devicePixelpitch, deviceRadiusPx, deviceCropRadius):
         """
         Scale factor s = R_dev / R_fit
         """
         R_fit = self.source_physical_radius()
         print(f"Source physical radius: {R_fit} m")
-        R_dev = self.device_physical_radius(devicePixelpitch, deviceRadiusPx, deviceCropRadius)
+        R_dev = device_physical_radius(devicePixelpitch, deviceRadiusPx, deviceCropRadius)
         print(f"Device physical radius: {R_dev} m")
         return R_dev / R_fit
     
@@ -593,32 +640,49 @@ class PhaseFile:
             transformed_coeffs.append(transformed_a)   
         return transformed_coeffs
     
-    @staticmethod
-    def scale_zernike_coefficients(coefficients: list[float], zernikes: list[ZernPol], scaleFactor: float)->list[float]:
+    def normalize(self):
         """
-        Static version of transform_pupil_size to scale Zernike coefficients for a different circular(!) pupil size.
-            :param coefficients: List of Zernike coefficients to scale
-            :type coefficients: list[float]
-            :param zernikes: List of ZernPol objects corresponding to the coefficients, used to determine the radial order for scaling
-            :type zernikes: list[ZernPol]
-            :param scaleFactor: The factor by which to scale the pupil radius (e.g. R_dev / R_fit)
-            :type scaleFactor: float
-            :return: A new list of Zernike coefficients corresponding to the scaled pupil size.
+        Normalize the Zernike coefficients by scaling them according to the radial order of the corresponding Zernike polynomials and the real-world normalization factor for the source measurement.
+        This is useful for comparing coefficients obtained from different measurements or devices with different pupil sizes.
+        Retruns a new PhaseFile object with the normalized coefficients and the normalization factor set to 1, indicating that the coefficients are now normalized to a common physical scale.
+        To normalize everything to the basis r=[0,1] used for fitting, use the real-world normalization factor obtained from the source measurement as the normalization_factor, which corresponds to the physical radius of the fitted pupil in the source image. This way, the coefficients are normalized to a common physical scale, allowing for meaningful comparison and transformation to target devices with different pupil sizes.
+        - Math:
+            Zernikes real world: Z(R) [Z]=rad, [R]=m
+            Zernikes normalized: Z(r) [Z]=rad, [r]=1
+             Z = a_r * R; [a_r] = rad/m
+             R = r * scaleFactor; [scaleFactor] = m
+             Z = a_r * r * scaleFactor = a_n * r; [a_n] = rad
+             scaleFactor = crop_radius * pixelpitch * min(fileSize)/2 = physical radius of the fitted pupil in the source image
+             a_n actually corresponds to the value obtained by Zernpy.fit
+             a_n = a_r * scaleFactor = a_r * physical radius of the fitted pupil in the source image
+            Therefore you need to normalize the coefficients by dividing them by the physical radius of the fitted pupil in the source image to get the normalized coefficients corresponding to the basis r=[0,1] used for fitting.
+
+        """
+        if self.realworldNormalizationFactor is None:
+            raise ValueError("Real-world normalization factor is not defined. Make sure pixelpitch and crop_radius are set for the source measurement.")
+        P = deepcopy(self)
+        P.coefficients = self.transform_pupil_size(1/self.realworldNormalizationFactor)
+        P.realworldNormalizationFactor = 1
+        return P
+    
+    def scale_zernike_coefficients(self, scale_factor):
+        """
+        Scale the Zernike coefficients by a given factor, without changing the corresponding Zernike polynomials. This is a simple scaling of the coefficients and does not take into account the scaling properties of the Zernike polynomials with radius. Use transform_pupil_size for that purpose.
+            :param scale_factor: The factor by which to scale the coefficients (e.g. to adjust for different measurement units or to apply a global scaling)
+            :type scale_factor: float
+            :return: A new list of Zernike coefficients scaled by the given factor.
             :rtype: list[float]
         """
-        if len(coefficients) != len(zernikes):
-            raise ValueError("Number of coefficients must match number of Zernikes.")
-        
-        transformed_coeffs = []
-        for a, z in zip(coefficients, zernikes):
-            m, n = z.get_mn_orders()
-            transformed_a = a * (scaleFactor ** n)
-            transformed_coeffs.append(transformed_a)
-        return transformed_coeffs
+        if not self._hasZernikCoefficients():
+            raise ValueError("Fit the Zernikes first.")
+        p = deepcopy(self)
+        p.coefficients = self.transform_pupil_size(scale_factor)
+        p.realworldNormalizationFactor *= scale_factor
+        return p
     
     def show_phase(self, title = "Phase", cmap="viridis", wrapped = True):
         fig, ax = plt.subplots(figsize=(6,6))
-        self.plot_phase_on_axes(ax, self.phase, title, cmap, wrapped)
+        PlottingUtils.plot_phase_on_axes(ax, self.phase, title, cmap, wrapped)
         plt.show()
         return fig
     
@@ -630,19 +694,35 @@ class PhaseFile:
         for z, ax in zip(self.zernikes, axs):
             m, n = z.get_mn_orders()
             mode_phase = zernike_extended(m, n, *self._createNormPolarMesh())*self.coefficients[self.zernikes.index(z)]
-            self.plot_phase_on_axes(ax, mode_phase, title=f"{z.get_polynomial_name()}\nZernike m={m}, n={n}", cmap=cmap, wrapped=False)
+            PlottingUtils.plot_phase_on_axes(ax, mode_phase, title=f"{z.get_polynomial_name()}\nZernike m={m}, n={n}", cmap=cmap, wrapped=wrapped)
         fig.tight_layout()
         fig.show()
         return fig
     
-    def plot_coefficients(self, exclude_indeces = []):
+    def plot_coefficients_on_axes(self, ax:Axes, exclude_indices: list[int] = [], title = None, names = True):
+        """
+        Plot Zernike coefficients as a bar chart on given axes, with labels and optional exclusion of certain indices.
+            :param ax: Matplotlib axes to plot on
+            :type ax: Axes
+            :param exclude_indices: List of indices of Zernike orders to exclude from the plot (e.g. piston, tip, tilt), default []
+            :type exclude_indices: list[int]
+            :param title: Title for the plot, default "Zernike Coefficients"
+            :type title: str
+            :param names: Whether to include polynomial names in the labels, default True
+            :type names: bool
+        """
+        if title is None:
+            title = f"{self.path.stem}"
+        PlottingUtils.plot_coefficients_on_axes(ax, self.coefficients, self.zernikes, exclude_indices, title, names)
+    
+    def plot_coefficients(self, exclude_indices = [], title = None, names = True):
         if not self._hasZernikCoefficients():
             raise ValueError("No coefficients to plot. Fit the Zernikes first.")
         
-        fig, ax = plt.subplots(figsize=(8,4))
-        self.plot_coefficients_on_axes(ax, self.coefficients, self.zernikes, exclude_indeces)
-        fig.show()
+        fig, ax = plt.subplots(figsize=(8,6))
+        PlottingUtils.plot_coefficients_on_axes(ax, self.coefficients, self.zernikes, exclude_indices, title, names)
         return fig
+    
 
     def make_SLM_phase_pattern(self, deviceCropRadius, devicePixelpitch=SLM_PIXEL_LENGTH, shape = (SLM_HEIGHT_PX, SLM_WIDTH_PX), checkerboard = None, wrapped = True, invertCoefficients = False):
         """
@@ -704,51 +784,4 @@ class PhaseFile:
         print(f"Zernike coefficients saved to {save_path}")
     
 if __name__ == "__main__":
-    crop_radius = 0.55
-
-    dir = Path(r"C:\Users\smile\Downloads\260227_2\260227_2\WF_k6Def_0SphAb\Results")
-    phaseF = PhaseFile.loadFile(dir / "PHA SID4 03h41m24s102ms.csv", delimiter=",", crop_radius=crop_radius, pixelpitch=29.6e-6)
-
-    # choose modes however you like
-    fitPols = generate_polynomials(3)
-    fit = phaseF.fitZernikesToFile(fitPols)
-
-    # target device example
-    device_shape = (1200, 1024)  # e.g. SLM resolution
-    device_pixelpitch = 12.5e-6  # e.g. SLM pixel pitch in meters
-    device_radius_px = min(device_shape) / 2
-    device_crop_radius = 0.9
-
-    device_shape = phaseF.fileSize  # e.g. SLM resolution
-    device_pixelpitch = DEFAULT_PIXELPITCH  # e.g. SLM pixel pitch in meters
-    device_radius_px = min(device_shape) / 2
-    device_crop_radius = 0.9
-    print(f"device_radius = {device_radius_px} px, device_crop_radius = {device_crop_radius}, device physical radius = {phaseF.device_physical_radius(device_pixelpitch, device_radius_px, device_crop_radius)} m")
-
-    transformed_coeffs = phaseF.transform_pupil_size(
-        phaseF.get_scale_factor_to_device(device_pixelpitch, device_radius_px, device_crop_radius)
-    )
-    print(f"realworld normalization factor for source: {phaseF.realworldNormalizationFactor} m")
-    print(f"Scale factor to device: {phaseF.get_scale_factor_to_device(device_pixelpitch, device_radius_px, device_crop_radius)}")
-    phaseTransformed = phaseF.evaluate_zernikes_on_mesh(transformed_coeffs, fitPols, *phaseF.make_polar_mesh(device_shape, device_crop_radius)) 
-
-    fig = plt.figure(figsize=(12, 6))
-    ZernPol.plot_sum_zernikes_on_fig(fig,fit[0], fitPols)
-    ax = fig.add_subplot(4,4,1)
-    c = ax.imshow(phaseF.phase)
-    plt.colorbar(c, ax=ax)
-    ax.set_title("Original Phase")
-    ax2 = fig.add_subplot(4,4,5)
-    c2 = ax2.imshow(fit[1])
-    plt.colorbar(c2, ax=ax2)
-    ax2.set_title("Evaluated Phase")
-    ax3 = fig.add_subplot(4,4,9)
-    c3 = ax3.imshow(phaseF.make_polar_mesh(device_shape, device_crop_radius)[1], cmap="coolwarm")
-    plt.colorbar(c3, ax=ax3)
-    ax3.set_title("Polar Mesh phase")
-    ax4 = fig.add_subplot(4,4,13)
-    c4 = ax4.imshow(phaseTransformed%(2*np.pi), cmap="coolwarm")
-    ax4.set_title("Phasefront on device")
-    plt.colorbar(c4, ax=ax4)
-    plt.show()
-    
+    print("This is the Zernikes module. It provides the PhaseFile class for loading phase data, fitting Zernike polynomials, and transforming coefficients for different device pupil sizes. It also includes utility functions for plotting and saving coefficients.")
