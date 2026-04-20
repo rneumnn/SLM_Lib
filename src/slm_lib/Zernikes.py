@@ -172,6 +172,83 @@ class ZernikeAnalysisUtils:
     """
     static utility functions for comparing and subtracting Zernike coefficients and polynomials from different measurements, without the need to create PhaseFile objects. These functions operate on raw lists of coefficients and ZernPol objects, along with the necessary normalization factors, to perform the desired comparisons and transformations. This allows for more flexible analysis of Zernike data without being tied to the PhaseFile class structure.
     """
+    @staticmethod
+    def make_polar_mesh(shape, crop_radius=1.0, phase_offset = np.pi*3/2, crop_pupil=True):
+        """
+        Polar mesh on the target device, normalized to the target device pupil.
+        r_dev_norm = 1 at the target pupil edge.
+
+            :param shape: Shape of the target device (height, width)
+            :type shape: tuple[int]
+            :param crop_radius: Normalized Crop radius for the target device pupil [0.5-1.0], defined as the beam radius normalized to the device physical radius. E.g. 0.9 means the beam radius is 90% of the device physical radius.
+            :type crop_radius: float
+            :param phase_offset: Phase offset for the polar mesh
+            :type phase_offset: float
+            :param crop_pupil: Whether to crop the pupil
+            :type crop_pupil: bool
+
+        """
+        print(f"Making device polar mesh with\nshape={shape}, crop_radius={crop_radius}, phase_offset={phase_offset}")
+        # Calculate center of the input image - depending on its sizes
+        rows, cols = shape
+        img_min_size = min(rows, cols)
+        img_max_size = max(rows, cols)
+        if rows % 2 == 0:
+            center_row = (rows // 2) - 0.5
+        else:
+            center_row = (rows - 1) // 2
+        if cols % 2 == 0:
+            center_col = (cols // 2) - 0.5
+        else:
+            center_col = (cols - 1) // 2
+        # Define the radius for cropping, different rules applied for avoiding removing many pixels out
+        if img_min_size % 2 == 0:
+            r = (img_min_size // 2) - 0.5
+        else:
+            r = (img_min_size - 1) // 2
+        if img_max_size - img_min_size < 2:
+            if img_max_size % 2 == 0:
+                r = (img_max_size // 2) - 0.5
+            else:
+                r = (img_max_size - 1) // 2
+        cy = center_row
+        cx = center_col
+        R0 = r * crop_radius
+
+        y, x = np.indices((rows, cols))
+        yy = y - cy 
+        xx = x - cx 
+
+        r = np.sqrt(yy**2 + xx**2) / R0
+        theta = (np.arctan2(xx, yy) + phase_offset)%(2*np.pi)  # keep same axis convention as your original code if desired
+        if crop_pupil:
+            r[r > 1] = np.nan
+            theta[r > 1] = np.nan
+        return r, theta
+
+    @staticmethod
+    def evaluate_zernikes_on_mesh(coefficients: list[float], zernikes: list[ZernPol], r_mesh, theta_mesh):
+        """
+        Evaluate the Zernike sum on a given polar mesh.
+            :param coefficients: List of Zernike coefficients
+            :type coefficients: list[float]
+            :param zernikes: List of Zernike polynomials corresponding to the coefficients
+            :type zernikes: list[ZernPol]
+            :param r_mesh: Radial coordinates of the mesh
+            :type r_mesh: np.ndarray
+            :param theta_mesh: Angular coordinates of the mesh
+            :type theta_mesh: np.ndarray
+            :return: The evaluated phase pattern on the mesh corresponding to the Zernike sum.
+            :rtype: np.ndarray
+        """
+        if len(coefficients) != len(zernikes):
+            raise ValueError("Number of coefficients must match number of Zernikes.")
+        
+        total_phase = np.zeros_like(r_mesh)
+        for a, z in zip(coefficients, zernikes):
+            m, n = z.get_mn_orders()
+            total_phase += a * zernike_extended(m, n, r_mesh, theta_mesh)
+        return total_phase
 
     @staticmethod
     def compare_zernikes_raw(measured_zernikes: list[ZernPol], reference_zernikes: list[ZernPol])->tuple[list[int], list[int], list[tuple[int, int]]]:
@@ -354,6 +431,18 @@ class PhaseFile:
     8. Use transform_pupil_size to get the transformed Zernike coefficients for the target device.
     9. Evaluate the transformed Zernikes on the target device's polar mesh using evaluate_zernikes_on_mesh to get the phase pattern to apply on the device.
     """
+    def __new__(cls, *args, **kwargs):
+        instance = super(PhaseFile, cls).__new__(cls)
+        instance.zernikes = None
+        instance.coefficients = None
+        instance.pixelpitch = None
+        instance.fileSize = None
+        instance.minSize = None
+        instance.realworldNormalizationFactor = None
+        instance.path = None
+        instance.crop_radius = None
+        
+        return instance
 
     def __init__(self, path: Path, delimiter=",", crop_radius=0.5, pixelpitch=DEFAULT_PIXELPITCH):
         self.zernikes: list[ZernPol] | None = None
@@ -383,13 +472,19 @@ class PhaseFile:
         Radius is normalized so r=1 corresponds to the fitted pupil edge.
         Outside that circle, r is set to NaN.
         """
+        c_r = self.crop_radius
         if self.crop_radius is None:
-            raise ValueError("crop_radius must be set before building the mesh.")
+            c_r = 1
 
-        h, w = self.fileSize
+        if self.fileSize is None:
+            h, w = int(SLM_HEIGHT_PX), int(SLM_WIDTH_PX)
+
+        else:
+            h, w = self.fileSize
+        minSize = min(h, w)/2
         cy = np.ceil(h / 2)
         cx = np.ceil(w / 2)
-        R0 = np.ceil(self.minSize / 2) * self.crop_radius
+        R0 = minSize * c_r
 
         y, x = np.indices((h, w))
         yy = y - cy
@@ -427,6 +522,8 @@ class PhaseFile:
         self.coefficients = coefficients
         self.zernikes = zernikes
         self.realworldNormalizationFactor = realworldNormalizationFactor
+        self.crop_radius = None
+        self.phase = self.phase_from_fit(wrapped = False)  # reconstruct the phase from the coefficients and Zernikes for potential further analysis or plotting
 
     def _calcNormalizationFactor(self):
         #in m, corresponds to the physical radius of the fitted pupil in the source image, used for normalizing coefficients to a common physical scale
@@ -456,9 +553,6 @@ class PhaseFile:
         p = PhaseFile.__new__(PhaseFile)  # create an uninitialized instance
         p.zernikes = zernikes
         p.coefficients = coefficients
-        p.pixelpitch = None
-        p.fileSize = None
-        p.minSize = None
         p.realworldNormalizationFactor = normalization_factor
         p.path = Path(filename).with_suffix(".zrnk")
         return p
@@ -509,82 +603,7 @@ class PhaseFile:
         return avg_phase_file
         
     #   polar mesh and Zernike evaluation
-    @staticmethod
-    def make_polar_mesh(shape, crop_radius=1.0, phase_offset = np.pi*3/2, crop_pupil=True):
-        """
-        Polar mesh on the target device, normalized to the target device pupil.
-        r_dev_norm = 1 at the target pupil edge.
-
-            :param shape: Shape of the target device (height, width)
-            :type shape: tuple[int]
-            :param crop_radius: Normalized Crop radius for the target device pupil [0.5-1.0], defined as the beam radius normalized to the device physical radius. E.g. 0.9 means the beam radius is 90% of the device physical radius.
-            :type crop_radius: float
-            :param phase_offset: Phase offset for the polar mesh
-            :type phase_offset: float
-            :param crop_pupil: Whether to crop the pupil
-            :type crop_pupil: bool
-
-        """
-        print(f"Making device polar mesh with\nshape={shape}, crop_radius={crop_radius}, phase_offset={phase_offset}")
-        # Calculate center of the input image - depending on its sizes
-        rows, cols = shape
-        img_min_size = min(rows, cols)
-        img_max_size = max(rows, cols)
-        if rows % 2 == 0:
-            center_row = (rows // 2) - 0.5
-        else:
-            center_row = (rows - 1) // 2
-        if cols % 2 == 0:
-            center_col = (cols // 2) - 0.5
-        else:
-            center_col = (cols - 1) // 2
-        # Define the radius for cropping, different rules applied for avoiding removing many pixels out
-        if img_min_size % 2 == 0:
-            r = (img_min_size // 2) - 0.5
-        else:
-            r = (img_min_size - 1) // 2
-        if img_max_size - img_min_size < 2:
-            if img_max_size % 2 == 0:
-                r = (img_max_size // 2) - 0.5
-            else:
-                r = (img_max_size - 1) // 2
-        cy = center_row
-        cx = center_col
-        R0 = r * crop_radius
-
-        y, x = np.indices((rows, cols))
-        yy = y - cy 
-        xx = x - cx 
-
-        r = np.sqrt(yy**2 + xx**2) / R0
-        theta = (np.arctan2(xx, yy) + phase_offset)%(2*np.pi)  # keep same axis convention as your original code if desired
-        if crop_pupil:
-            r[r > 1] = np.nan
-            theta[r > 1] = np.nan
-        return r, theta
-
-    @staticmethod
-    def evaluate_zernikes_on_mesh(coefficients: list[float], zernikes: list[ZernPol], r_mesh, theta_mesh):
-        """
-        Evaluate the Zernike sum on a given polar mesh.
-            :param coefficients: List of Zernike coefficients
-            :type coefficients: list[float]
-            :param zernikes: List of Zernike polynomials corresponding to the coefficients
-            :type zernikes: list[ZernPol]
-            :param r_mesh: Radial coordinates of the mesh
-            :type r_mesh: np.ndarray
-            :param theta_mesh: Angular coordinates of the mesh
-            :type theta_mesh: np.ndarray
-        """
-        if len(coefficients) != len(zernikes):
-            raise ValueError("Number of coefficients must match number of Zernikes.")
-        
-        total_phase = np.zeros_like(r_mesh)
-        for a, z in zip(coefficients, zernikes):
-            m, n = z.get_mn_orders()
-            total_phase += a * zernike_extended(m, n, r_mesh, theta_mesh)
-        return total_phase
-
+    
     def set_pixelpitch(self, pixelpitch):
         self.pixelpitch = pixelpitch
         self.realworldNormalizationFactor = self._calcNormalizationFactor()
@@ -680,10 +699,21 @@ class PhaseFile:
         p.realworldNormalizationFactor *= scale_factor
         return p
     
-    def show_phase(self, title = "Phase", cmap="viridis", wrapped = True):
+    def phase_from_fit(self, wrapped = True, r_mesh = None, theta_mesh = None):
+        """
+        Evaluate the Phasefront corresponding to the fitted Zernike coefficients and polynomials on the normalized polar mesh of the source image. This returns the phase pattern that corresponds to the fitted Zernikes, which can be used for visualization or for further analysis such as comparison with target device patterns or for generating compensation patterns.
+        """
+        if not self._hasZernikCoefficients():
+            raise ValueError("Fit the Zernikes first.")
+        if r_mesh is None or theta_mesh is None:
+            r_mesh, theta_mesh = self._createNormPolarMesh()
+        if wrapped:
+            return np.mod(ZernikeAnalysisUtils.evaluate_zernikes_on_mesh(self.coefficients, self.zernikes, r_mesh, theta_mesh), 2*np.pi)
+        return ZernikeAnalysisUtils.evaluate_zernikes_on_mesh(self.coefficients, self.zernikes, r_mesh, theta_mesh)
+    
+    def plot_phase(self, title = "Phase", cmap="viridis", wrapped = True):
         fig, ax = plt.subplots(figsize=(6,6))
-        PlottingUtils.plot_phase_on_axes(ax, self.phase, title, cmap, wrapped)
-        plt.show()
+        PlottingUtils.plot_phase_on_axes(ax, self.phase_from_fit(wrapped=wrapped), title, cmap, wrapped)
         return fig
     
     def plot_zernike_modes(self, wrapped = False, cmap="coolwarm"):
